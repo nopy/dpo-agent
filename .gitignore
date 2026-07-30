@@ -1,0 +1,18 @@
+# Ignore secrets and local state.
+.env
+.env.local
+*.log
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Docker
+docker-data/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store

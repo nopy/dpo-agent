@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>dpo-agent — Contract Triage</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="logo">⚖️</span>
+      <h1>dpo-agent</h1>
+      <span class="tagline">Contract triage &amp; review</span>
+    </div>
+    <div class="server-status" id="server-status">
+      <span class="status-dot status-unknown"></span>
+      <span class="status-text">Checking server…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- LEFT: input form -->
+    <section class="panel input-panel">
+      <h2>Contract input</h2>
+
+      <div class="form-section">
+        <label class="form-label">Mode</label>
+        <div class="radio-group">
+          <label class="radio-option">
+            <input type="radio" name="mode" value="example" checked />
+            <span>Use bundled example</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="mode" value="inline" />
+            <span>Paste contract text</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-section" id="document-id-section">
+        <label class="form-label" for="document-id">Document ID</label>
+        <input
+          type="text"
+          id="document-id"
+          value="example-dpa"
+          class="text-input"
+        />
+      </div>
+
+      <div class="form-section hidden" id="inline-section">
+        <label class="form-label" for="inline-text">Contract text</label>
+        <textarea
+          id="inline-text"
+          class="text-area"
+          rows="10"
+          placeholder="Paste the contract text here…"
+        ></textarea>
+      </div>
+
+      <div class="form-section">
+        <label class="form-label" for="jurisdiction">Jurisdiction notes</label>
+        <textarea
+          id="jurisdiction"
+          class="text-area"
+          rows="3"
+        >Provider is a US SaaS vendor; Customer has EU and US data subjects.</textarea>
+      </div>
+
+      <div class="form-section">
+        <button id="run-button" class="primary-button">
+          Run triage pipeline
+        </button>
+        <button id="cancel-button" class="secondary-button hidden">
+          Cancel
+        </button>
+      </div>
+
+      <div class="form-section">
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label class="form-label" for="cost-threshold">Cost threshold (USD)</label>
+          <input
+            type="number"
+            id="cost-threshold"
+            value="5.0"
+            min="0.1"
+            step="0.1"
+            class="text-input"
+          />
+          <p class="form-help">
+            The pipeline pauses for human confirmation if the
+            estimated cost exceeds this threshold. Default: $5.
+          </p>
+        </details>
+      </div>
+    </section>
+
+    <!-- RIGHT: progress + report -->
+    <section class="panel output-panel">
+      <div class="tabs">
+        <button class="tab active" data-tab="progress">Progress</button>
+        <button class="tab" data-tab="report">Report</button>
+        <button class="tab" data-tab="json">JSON</button>
+      </div>
+
+      <!-- Progress tab -->
+      <div class="tab-content active" id="progress-tab">
+        <div class="pipeline-header">
+          <h3 id="pipeline-title">Idle</h3>
+          <div class="pipeline-meta" id="pipeline-meta"></div>
+        </div>
+
+        <div class="stage-list" id="stage-list">
+          <div class="stage stage-pending" data-stage="0">
+            <div class="stage-icon">⏵</div>
+            <div class="stage-name">summarize</div>
+            <div class="stage-status">Pending</div>
+            <div class="stage-progress"></div>
+          </div>
+          <div class="stage stage-pending" data-stage="1">
+            <div class="stage-icon">⏵</div>
+            <div class="stage-name">clause_classification</div>
+            <div class="stage-status">Pending</div>
+            <div class="stage-progress"></div>
+          </div>
+          <div class="stage stage-pending" data-stage="2">
+            <div class="stage-icon">⏵</div>
+            <div class="stage-name">obligations</div>
+            <div class="stage-status">Pending</div>
+            <div class="stage-progress"></div>
+          </div>
+          <div class="stage stage-pending" data-stage="3">
+            <div class="stage-icon">⏵</div>
+            <div class="stage-name">risk_score</div>
+            <div class="stage-status">Pending</div>
+            <div class="stage-progress"></div>
+          </div>
+          <div class="stage stage-pending" data-stage="4">
+            <div class="stage-icon">⏵</div>
+            <div class="stage-name">dpo</div>
+            <div class="stage-status">Pending</div>
+            <div class="stage-progress"></div>
+          </div>
+        </div>
+
+        <div class="live-log" id="live-log">
+          <p class="log-empty">Click "Run triage pipeline" to start.</p>
+        </div>
+      </div>
+
+      <!-- Report tab -->
+      <div class="tab-content" id="report-tab">
+        <div class="report-empty" id="report-empty">
+          <p>The markdown report will appear here after the pipeline completes.</p>
+        </div>
+        <div class="report-content hidden" id="report-content">
+          <div class="report-toolbar">
+            <button class="small-button" id="copy-report">Copy</button>
+            <button class="small-button" id="download-report">Download .md</button>
+          </div>
+          <div id="report-rendered"></div>
+        </div>
+      </div>
+
+      <!-- JSON tab -->
+      <div class="tab-content" id="json-tab">
+        <div class="report-empty" id="json-empty">
+          <p>The JSON output will appear here after the pipeline completes.</p>
+        </div>
+        <div class="report-content hidden" id="json-content">
+          <div class="report-toolbar">
+            <button class="small-button" id="copy-json">Copy</button>
+            <button class="small-button" id="download-json">Download .json</button>
+          </div>
+          <pre id="json-rendered"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span>dpo-agent v0.3.0 — 9 tasks, full triage pipeline, 4-interface tool surface</span>
+    <a href="https://docs.langchain.com/oss/python/deepagents" target="_blank">deepagents docs</a>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
