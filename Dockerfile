@@ -25,31 +25,22 @@ COPY dpo_agent ./dpo_agent
 # Install dpo-agent with the [server] extra (FastAPI + uvicorn).
 RUN pip install --no-cache-dir --prefix=/install ".[server]"
 
-# Copy the kgpipeline from the sibling repo (wiki-contracts) into
-# the image, IF it's available at build time. The default path
-# is ../wiki-contracts/kgpipeline, but this can be overridden
-# via the KGPIPELINE_PATH build arg.
-#
-# If kgpipeline is not present (e.g. a fresh checkout that hasn't
-# been placed next to wiki-contracts), the kg_build task will
-# raise a clear ImportError at runtime. The rest of dpo-agent
-# works without kgpipeline.
-#
-# Implementation: instead of `COPY src dst` (which fails if src
-# doesn't exist), we use `COPY --from=build_context` via a
-# bind-mounted path. The simpler approach is to use a `RUN`
-# with a shell conditional:
-ARG KGPIPELINE_PATH=../wiki-contracts/kgpipeline
-RUN if [ -d "${KGPIPELINE_PATH}" ]; then \
-        echo "Vendoring kgpipeline from ${KGPIPELINE_PATH}..." && \
+# Copy the kgpipeline — but it's now part of dpo-agent, so this
+# step is a no-op. The kgpipeline is in dpo_agent/kg/ alongside
+# the rest of dpo-agent, and gets installed via `pip install .`
+# above. If you have an external kgpipeline (e.g. the original
+# wiki-contracts/kgpipeline), set KGPIPELINE_PATH to its path
+# and the legacy integration in dpo_agent/integrations/kgpipeline.py
+# will use it. The default is no-op.
+ARG KGPIPELINE_PATH=""
+RUN if [ -n "${KGPIPELINE_PATH}" ] && [ -d "${KGPIPELINE_PATH}" ]; then \
+        echo "Vendoring external kgpipeline from ${KGPIPELINE_PATH}..." && \
         mkdir -p /usr/local/lib/python3.11/site-packages/kgpipeline && \
         cp -r ${KGPIPELINE_PATH}/. \
               /usr/local/lib/python3.11/site-packages/kgpipeline/ && \
-        echo "kgpipeline vendored successfully"; \
+        echo "kgpipeline vendored"; \
     else \
-        echo "WARNING: kgpipeline not found at ${KGPIPELINE_PATH}." && \
-        echo "         The kg_build task will be unavailable at runtime." && \
-        echo "         Set KGPIPELINE_PATH to a valid directory to include it."; \
+        echo "Using the local dpo_agent.kg module (kgpipeline is part of dpo-agent)."; \
     fi
 
 # ─── Stage 2: runtime ───────────────────────────────────────────────────────

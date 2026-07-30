@@ -114,6 +114,11 @@ Seven tasks ship by default:
 - `obligations` — Detect binding obligations with the 5-field schema
 - `redline_negotiation` — Position-by-position negotiation brief
 - `kg_build` — Build a knowledge graph from a TriageReport
+- `kg_extract` — Layer 2 of GraphRAG (entity/contract extraction)
+- `kg_resolve` — Layer 3 of GraphRAG (entity dedup)
+- `kg_agent` — Layer 6 of GraphRAG (long-context Q&A)
+- `kg_verify` — Layer 7 of GraphRAG (verification)
+- `kg_update` — Layer 8 of GraphRAG (graph versioning)
 
 In addition, the package ships a **triage pipeline** that runs
 multiple tasks in sequence against a single contract and
@@ -529,7 +534,7 @@ compliance.
 ### `kg_build` — Build a knowledge graph from a TriageReport
 
 Takes a `TriageReport` (the dict output of
-`TriagePipeline.run()`) and runs the kgpipeline's
+`TriagePipeline.run()`) and runs the local kgpipeline's
 resolve → store → classify → update layers. Persists to a
 SQLite graph DB and (optionally) exports to Cypher for
 Neo4j porting.
@@ -541,8 +546,17 @@ data (`metadata`, `clause_classification`, `obligations`,
 extract layer (Layer 2) is the same work — running both
 would burn tokens for no gain. This task **skips extract**;
 it converts the TriageReport directly to a
-`kgpipeline.ontology.Contract` via the
+`dpo_agent.kg.ontology.Contract` via the
 `dpo_agent.integrations.kgpipeline.TriageReportAdapter`.
+
+The kgpipeline is **part of dpo-agent** at `dpo_agent/kg/`.
+It implements the 8-layer GraphRAG architecture from the
+wiki-contracts pages [[graphrag-build-pipeline]] and
+[[contract-ontology-design-recipe]]. The Python code
+(ontology, GraphStore, verify, retrieve, ingest, llm)
+lives in `dpo_agent/kg/`; the LLM-driven layers (extract,
+resolve, agent, verify, update) are dpo-agent tasks at
+`dpo_agent/tasks/kg_*/`.
 
 The 4 kgpipeline layers skipped (because the TriageReport
 supersedes them):
@@ -553,69 +567,89 @@ supersedes them):
 - **agent** — not part of build (only for queries)
 
 The 4 kgpipeline layers run:
-- **resolve** — party dedup
+- **resolve** — party dedup (kg_resolve task)
 - **store** — upsert to SQLite graph
-- **classify** — update verdict (new / duplicate /
-  contradiction / update)
+- **classify** — update verdict (kg_update task)
 - **verify** — evidence coverage, source verification,
-  ISO discipline, no hallucinations
+  ISO discipline, no hallucinations (kg_verify task)
 
-The output JSON has 5 blocks:
-- `executive_summary` — token-savings documentation
-  ("skipped N layers")
-- `contract` — the kgpipeline `Contract` Pydantic
-- `graph_stats` — node / edge counts from
-  `GraphStore.stats()`
-- `verification_report` — the 6 verification checks
-- `update_verdicts` — new / duplicate / contradiction
-  classifications
+### The local kgpipeline (dpo_agent.kg)
 
-The integration module (`dpo_agent.integrations.kgpipeline`)
-provides:
-- `TriageReportAdapter` — converts a TriageReport to a
-  kgpipeline Contract
-- `build_graph(...)` — high-level: runs resolve + store
-  + classify + verify
-- `run_pipeline(...)` — full kgpipeline-shaped return type
-- `kg_build_from_triage_pipeline(...)` — convenience
-  function used internally
+The `dpo_agent.kg` module is a port of
+`wiki-contracts/kgpipeline/` into dpo-agent. It implements
+the same 8-layer GraphRAG architecture but with the
+LLM-driven layers (extract, resolve, agent, verify, update)
+implemented as dpo-agent tasks.
 
-To use end-to-end:
+Architecture:
+
+| Layer | Module / Task | Purpose |
+|---|---|---|
+| 1 | `dpo_agent.kg.ingest` | PDF / DOCX / HTML / TXT → text chunks |
+| 2 | `dpo_agent.tasks.kg_extract` | LLM → validated Pydantic Contract |
+| 3 | `dpo_agent.tasks.kg_resolve` + `dpo_agent.kg.resolve` | Entity dedup (exact / normalized / fuzzy / LLM-confirm) |
+| 4 | `dpo_agent.kg.store` | SQLite property graph + Cypher export |
+| 5 | `dpo_agent.kg.retrieve` | Vector + entity + path + temporal search |
+| 6 | `dpo_agent.tasks.kg_agent` + `dpo_agent.kg.retrieve` | Long-context LLM agent loop (plan → query → analyze) |
+| 7 | `dpo_agent.tasks.kg_verify` + `dpo_agent.kg.verify` | Evidence / confidence / sources / ISO discipline |
+| 8 | `dpo_agent.tasks.kg_update` + `dpo_agent.kg.update` | Graph versioning (new / duplicate / contradiction / update / uncertain) |
+
+The Python code (`dpo_agent/kg/`) is the deterministic
+implementation. The tasks (`dpo_agent/tasks/kg_*/`) are
+the LLM-driven layers. The two share the same schema
+(`dpo_agent.kg.ontology.Contract`).
+
+Quick start:
 
 ```python
-from dpo_agent import TriagePipeline, PipelineConfig
-from dpo_agent.integrations.kgpipeline import (
-    kg_build_from_triage_pipeline,
+from dpo_agent.kg import (
+    Contract, ContractType, Party, PartyRole,
+    GraphStore, Verifier, classify_update, resolve_parties,
+    Retriever, MockLLM, get_provider,
 )
+from dpo_agent.tasks.kg_extract import Agent as KgExtractAgent
+from dpo_agent.tasks.kg_resolve import Agent as KgResolveAgent
 
-# 1. Run dpo-agent
-pipeline = TriagePipeline(tools=my_tools, config=PipelineConfig())
-triage_report = pipeline.run(document_id="contract-001")
+# 1. Build a contract via the kg_extract task
+agent = KgExtractAgent(task="kg_extract", tools=my_tools)
+result = agent.run(document_id="contract-001")
 
-# 2. Build the graph
-result = kg_build_from_triage_pipeline(
-    pipeline_report=triage_report.json,
-    document_text=contract_text,
-    db_path="./contracts.db",
-    contract_id="contract-001",
-    export_cypher="./contract-001.cypher",
-)
+# 2. Persist to a graph DB
+store = GraphStore("contracts.db")
+contract = parse_extraction_result(result)
+store.upsert(contract)
+
+# 3. Verify
+verifier = Verifier(store)
+report = verifier.verify_contract(contract)
+print(report.summary())
+
+# 4. Classify the update
+provider = get_provider("mock")  # or "anthropic" / "openai"
+verdict = classify_update(contract, store, provider=provider)
+print(verdict.summary())
+
+# 5. Export to Cypher for Neo4j
+cypher = store.to_cypher()
+with open("contracts.cypher", "w") as f:
+    f.write(cypher)
 ```
 
-The kgpipeline package is **optional** — install from
-source (it's not yet on PyPI):
+The MockLLM is used by default (no API key required). For
+real LLM use:
 
-```bash
-# kgpipeline lives in wiki-contracts/kgpipeline
-pip install -e /path/to/wiki-contracts
+```python
+provider = get_provider("anthropic", model="claude-sonnet-4-5")
+# or
+provider = get_provider("openai", model="gpt-4o-mini")
 ```
 
-Or add the directory to `PYTHONPATH` (the example does
-this automatically).
+Optional deps (install with `pip install dpo-agent[server]`):
+- `openai` + `instructor` for OpenAIProvider
+- `anthropic` + `instructor` for AnthropicProvider
 
-See `dpo_agent/integrations/kgpipeline.py` for the full
-adapter API and `dpo_agent/tasks/kg_build/reviewer.md` for
-the prompt discipline.
+See `dpo_agent/kg/` for the full Python API and
+`dpo_agent/tasks/kg_*/` for the LLM-driven layers.
 
 ## Docker Deployment
 

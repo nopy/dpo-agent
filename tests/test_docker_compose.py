@@ -237,11 +237,13 @@ def test_dockerfile_installs_server_extra(dockerfile_text):
 
 
 def test_dockerfile_copies_kgpipeline(dockerfile_text):
-    """The Dockerfile should copy kgpipeline from the
-    sibling repo (so the dpo-agent container can use the
-    kgpipeline integration)."""
+    """The Dockerfile should accept the KGPIPELINE_PATH build
+    arg (defaulting to empty). The kgpipeline is now part of
+    dpo-agent, so vendoring is a no-op unless the user sets
+    KGPIPELINE_PATH to an external location."""
     assert "KGPIPELINE_PATH" in dockerfile_text
-    assert "kgpipeline" in dockerfile_text
+    # The default is empty (the kgpipeline is part of dpo-agent)
+    assert "ARG KGPIPELINE_PATH=" in dockerfile_text
 
 
 def test_dockerfile_creates_non_root_user(dockerfile_text):

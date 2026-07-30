@@ -1,37 +1,36 @@
-"""kgpipeline integration — convert dpo-agent TriageReports to
-kgpipeline Contracts and run the kgpipeline layers.
+"""Triage Report to kgpipeline Contract adapter.
 
-The KEY OPTIMIZATION: the dpo-agent's triage pipeline already
-produces structured data (metadata, clause_classification,
-obligations, summarize). The kgpipeline's Layer 2 (extract)
-is also an LLM call that produces the same data, just in a
-different Pydantic schema. Running both would burn tokens
-and produce inconsistent results.
+This module converts a dpo-agent TriageReport into the local
+kgpipeline Contract Pydantic (dpo_agent.kg.ontology.Contract) and
+runs the resolve + store + classify + verify layers.
+
+The kgpipeline is now part of dpo-agent (see dpo_agent/kg/).
+No external dependency on wiki-contracts. The schema is in
+dpo_agent/kg/ontology.py, the GraphStore is in dpo_agent/kg/store.py.
 
 This module provides:
 
-1. **`from_triage_report(triage_report, contract_id, document_text)`**
-   — converts a dpo-agent TriageReport into a
-   `kgpipeline.ontology.Contract` Pydantic object, with
+1. from_triage_report(triage_report, contract_id, document_text)
+   - converts a dpo-agent TriageReport into a
+   dpo_agent.kg.ontology.Contract Pydantic object, with
    evidence spans that point to the source contract.
 
-2. **`build_graph(triage_report, document_id, contract_id, db_path, document_text)`**
-   — high-level: runs `from_triage_report` + the kgpipeline's
+2. build_graph(triage_report, document_id, contract_id, db_path, document_text)
+   - high-level: runs from_triage_report + the kgpipeline's
    resolve + store + verify + update layers. Skips ingest
    (the contract is already in dpo-agent's document store)
    and extract (the TriageReport has the structured data).
 
-3. **`run_pipeline(triage_report, document_id, contract_id, db_path, ...)`**
-   — full kgpipeline PipelineResult with the TriageReport
+3. run_pipeline(triage_report, document_id, contract_id, db_path, ...)
+   - full kgpipeline PipelineResult with the TriageReport
    adapter plugged in.
 
-The kgpipeline package is **optional** — this module imports
-it lazily and raises a clear ImportError if it's not
-installed. Install with:
-
-    pip install kgpipeline  # not yet on PyPI; install from source
-    # or:
-    pip install -e /path/to/wiki-contracts
+The kgpipeline package is part of dpo-agent, so no separate
+install is required. If you want to use the OpenAI / Anthropic
+provider, install the optional deps:
+   pip install dpo-agent[server]
+   # OpenAI: pip install openai instructor
+   # Anthropic: pip install anthropic instructor
 """
 
 from __future__ import annotations
@@ -41,9 +40,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-# Lazy import of kgpipeline — it's an optional dependency.
+# Local imports — kgpipeline is now part of dpo-agent.
 try:
-    from kgpipeline.ontology import (
+    from dpo_agent.kg.ontology import (
         Contract,
         ContractType,
         Party,
@@ -56,11 +55,11 @@ try:
         EvidenceSpan,
         SCHEMA_VERSION,
     )
-    from kgpipeline.resolve import resolve_parties
-    from kgpipeline.store import GraphStore
-    from kgpipeline.verify import Verifier, VerificationReport
-    from kgpipeline.update import classify_update, UpdateVerdict
-    from kgpipeline.llm import LLMProvider
+    from dpo_agent.kg.resolve import resolve_parties
+    from dpo_agent.kg.store import GraphStore
+    from dpo_agent.kg.verify import Verifier, VerificationReport
+    from dpo_agent.kg.update import classify_update, UpdateVerdict
+    from dpo_agent.kg.llm import LLMProvider
     _HAVE_KGPIPELINE = True
 except ImportError:
     _HAVE_KGPIPELINE = False
@@ -305,7 +304,7 @@ class TriageReportAdapter:
             partial = text[:50]
             idx = self.document_text.find(partial)
         if idx == -1:
-            # Not found — produce a placeholder.
+            # Not found - produce a placeholder.
             return [EvidenceSpan(
                 chunk_id=section or "unknown",
                 char_start=0,
@@ -485,12 +484,12 @@ def build_graph(
     # 2. Open the store
     store = GraphStore(db_path)
 
-    # 3. Resolve (Layer 3) — dedup parties
+    # 3. Resolve (Layer 3) - dedup parties
     canonical_map, decisions = resolve_parties(
         contract.parties, provider=provider,
     )
 
-    # 4. Classify update (Layer 8) — before upsert, against
+    # 4. Classify update (Layer 8) - before upsert, against
     #    the current graph state
     verdict = classify_update(contract, store, provider=provider)
 
@@ -524,7 +523,7 @@ def run_pipeline(
 ) -> dict:
     """Build the graph and return a kgpipeline-shaped
     PipelineResult. For users who want the same return type
-    as `kgpipeline.pipeline.run()`.
+    as `dpo_agent.kg.pipeline.run()`.
 
     The key difference: the TriageReport's structured data
     replaces kgpipeline's extract layer (Layer 2). Layers
