@@ -52,6 +52,13 @@ Example (metadata):
 """
 
 from .agent import Agent, AgentConfig, ReviewResult
+from .models import (
+    all_resolved_models,
+    resolve_model,
+    resolve_optional_model,
+    DEFAULT_MODELS,
+    ALL_KINDS,
+)
 from .exceptions import (
     AgentStoppedError,
     ConfigurationError,
@@ -109,6 +116,12 @@ __all__ = [
     # Configs
     "AgentConfig",
     "TwoPassConfig",
+    # Model resolution
+    "resolve_model",
+    "resolve_optional_model",
+    "all_resolved_models",
+    "DEFAULT_MODELS",
+    "ALL_KINDS",
     "StreamingConfig",
     # Results
     "ReviewResult",

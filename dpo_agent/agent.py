@@ -32,6 +32,11 @@ from .exceptions import (
 from .tasks.loader import load_prompt
 from .tools import TOOLS, DocumentTools, dispatch
 
+# Model defaults are resolved from env vars (DPO_AGENT_MODEL_LOW /
+# MEDIUM / HIGH, with LLM_MODEL as legacy fallback). See
+# dpo_agent.models for the full resolution logic.
+from .models import resolve_model
+
 
 DEFAULT_REVIEWER_MODEL = "claude-sonnet-5"
 
@@ -43,7 +48,9 @@ class AgentConfig:
     Fields:
         model: Anthropic model ID. Override per task for cost /
             quality tradeoffs (e.g. haiku for navigator, sonnet for
-            reviewer, opus for high-stakes critique).
+            reviewer, opus for high-stakes critique). By default,
+            resolved from the DPO_AGENT_MODEL_MEDIUM env var (or
+            LLM_MODEL, or this default).
         max_tokens: max output tokens per model call.
         max_iterations: safety bound on the agent loop. The agent
             stops with MaxIterationsError if it doesn't reach
@@ -53,7 +60,9 @@ class AgentConfig:
         cache_system_prompt: whether to set `cache_control` on
             the system prompt.
     """
-    model: str = DEFAULT_REVIEWER_MODEL
+    model: str = field(default_factory=lambda: resolve_model(
+        "medium", default=DEFAULT_REVIEWER_MODEL
+    ))
     max_tokens: int = 8000
     max_iterations: int = 50
     cache_ttl: str = "ephemeral"

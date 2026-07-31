@@ -37,11 +37,13 @@ from dpo_agent.exceptions import (
 
 def test_package_metadata():
     assert dpo_agent.__version__ == "0.3.0"
-    # 31 names: 4 agents + 4 aliases + 1 tools dataclass + 1 dispatch +
+    # 36 names: 4 agents + 4 aliases + 1 tools dataclass + 1 dispatch +
     # 1 TOOLS list + 3 configs + 3 results + 1 event + 2 task utils +
     # 5 exceptions + 6 pipeline (TriagePipeline, TriageReport,
-    # PipelineConfig, PipelineStage, DEFAULT_TRIAGE_PLAN, triage).
-    assert len(dpo_agent.__all__) == 31
+    # PipelineConfig, PipelineStage, DEFAULT_TRIAGE_PLAN, triage)
+    # + 5 model resolution (resolve_model, resolve_optional_model,
+    # all_resolved_models, DEFAULT_MODELS, ALL_KINDS).
+    assert len(dpo_agent.__all__) == 36
 
 
 def test_all_public_api_importable():

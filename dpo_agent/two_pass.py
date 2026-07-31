@@ -22,6 +22,7 @@ from typing import Any
 import anthropic
 
 from .agent import Agent, AgentConfig, ReviewResult
+from .models import resolve_model, resolve_optional_model
 from .exceptions import AgentStoppedError, MaxIterationsError, ToolError
 from .tasks.loader import load_prompt
 from .tools import TOOLS, DocumentTools, dispatch
@@ -31,12 +32,18 @@ from .tools import TOOLS, DocumentTools, dispatch
 class TwoPassConfig:
     """Configuration for the two-pass agent.
 
-    By default, both passes use the same model. For high-stakes
+    By default, both passes use the same model (medium). For high-stakes
     use, set `critique_model` to a stronger model (e.g. opus
-    judging sonnet) to reduce self-evaluation bias.
+    judging sonnet) to reduce self-evaluation bias. Models are
+    resolved from env vars (DPO_AGENT_MODEL_MEDIUM/HIGH, with
+    LLM_MODEL as legacy fallback).
     """
-    reviewer_model: str = "claude-sonnet-5"
-    critique_model: str | None = None
+    reviewer_model: str = field(
+        default_factory=lambda: resolve_model("medium", default="claude-sonnet-5")
+    )
+    critique_model: str | None = field(
+        default_factory=lambda: resolve_optional_model("high")
+    )
     max_tokens: int = 8000
     max_iterations: int = 50
     cache_ttl: str = "ephemeral"

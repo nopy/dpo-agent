@@ -35,6 +35,7 @@ import anthropic
 
 from .exceptions import AgentStoppedError, MaxIterationsError, ToolError
 from .navigator import DPONavigator, NavigatorResult
+from .models import resolve_model, resolve_optional_model
 from .agent import Agent, AgentConfig, ReviewResult
 from .tools import TOOLS, DocumentTools, dispatch
 from .two_pass import DPOAgentTwoPass, TwoPassConfig, TwoPassResult
@@ -80,11 +81,26 @@ class AgentEvent:
 
 @dataclass
 class StreamingConfig:
-    """Configuration for the streaming pipeline."""
+    """Configuration for the streaming pipeline.
+
+    Models are resolved from env vars (DPO_AGENT_MODEL_LOW/MEDIUM/HIGH,
+    with LLM_MODEL as legacy fallback). The defaults:
+        - navigator_model: low  (cheap, fast)
+        - reviewer_model:  medium (default)
+        - critique_model:  high (strong, optional)
+    """
     task: str = "dpo"  # selects which task's prompts to load
-    navigator_model: str = DPONavigator.DEFAULT_NAVIGATOR_MODEL
-    reviewer_model: str = "claude-sonnet-5"
-    critique_model: str | None = None
+    navigator_model: str = field(
+        default_factory=lambda: resolve_model(
+            "low", default=DPONavigator.DEFAULT_NAVIGATOR_MODEL
+        )
+    )
+    reviewer_model: str = field(
+        default_factory=lambda: resolve_model("medium", default="claude-sonnet-5")
+    )
+    critique_model: str | None = field(
+        default_factory=lambda: resolve_optional_model("high")
+    )
     max_tokens: int = 8000
     max_iterations: int = 50
     cache_ttl: str = "ephemeral"

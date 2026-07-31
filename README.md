@@ -697,6 +697,66 @@ Optional deps (install with `pip install dpo-agent[server]`):
 See `dpo_agent/kg/` for the full Python API and
 `dpo_agent/tasks/kg_*/` for the LLM-driven layers.
 
+### Model selection (per-kind)
+
+The dpo-agent has a 3-tier model scheme: **low** (cheap/fast
+navigator), **medium** (default reviewer), **high** (strong
+critique). Set `DPO_AGENT_MODEL_{KIND}` to override each:
+
+```bash
+# Default: each kind uses its dpo-agent default
+#   LOW    = claude-haiku-4-5
+#   MEDIUM = claude-sonnet-5
+#   HIGH   = claude-opus-4-5
+
+# Override one kind at a time
+export DPO_AGENT_MODEL_MEDIUM=claude-sonnet-4-5
+export DPO_AGENT_MODEL_HIGH=claude-opus-4-1
+
+# Use a different model family
+export DPO_AGENT_MODEL_LOW=openai/gpt-4o-mini       # via OpenAI
+export DPO_AGENT_MODEL_HIGH=openai/o1              # via OpenAI
+export DPO_AGENT_MODEL_MEDIUM=anthropic/claude-sonnet-4  # via OpenRouter
+
+# One-size-fits-all override (legacy compat)
+export LLM_MODEL=claude-sonnet-5
+```
+
+Resolution order (per kind):
+1. `DPO_AGENT_MODEL_{KIND}` — kind-specific override
+2. `LLM_MODEL` — legacy single-model override
+3. The dpo-agent built-in default
+
+The optional `critique_model` field in `TwoPassConfig` and
+`StreamingConfig` resolves to `None` when no env var is set
+(preserves the "use reviewer_model as fallback" semantics).
+Set `DPO_AGENT_MODEL_HIGH` to opt in to a separate critique
+model.
+
+```python
+from dpo_agent import resolve_model, all_resolved_models
+
+# Programmatic access
+print(resolve_model("high"))     # claude-opus-4-5 (default)
+print(all_resolved_models())
+# {'low': 'claude-haiku-4-5', 'medium': 'claude-sonnet-5', 'high': 'claude-opus-4-5'}
+```
+
+The mapping of kind → use case:
+
+| Kind | Used by |
+|---|---|
+| `LOW` | Navigator (find-then-extract), kg_resolve, kg_update |
+| `MEDIUM` | Reviewer (single-pass / two-pass), kg_extract, kg_agent |
+| `HIGH` | Critique (two-pass), kg_verify |
+
+The Navigator uses LOW (cheap, just classifies chunks).
+The Reviewer uses MEDIUM (the main analysis). The Critique
+uses HIGH (a stronger model judging the reviewer's work
+reduces self-evaluation bias). This is the standard
+"weak-strong" pattern from the GraphRAG + self-refine
+literature.
+
 ## Docker Deployment
 
 The package ships a **production docker-compose stack** with
