@@ -324,57 +324,83 @@
 
       while (true) {
         const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        // Process the value FIRST, then check done. Otherwise
+        // the last chunk of events gets dropped when the stream
+        // closes cleanly (the reader returns done: true with the
+        // last chunk, but if we break before processing, the
+        // events are lost). This was the bug that caused the
+        // UI to stay "Running…" forever even though the server
+        // sent the error event correctly.
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
 
-        // SSE events are separated by "\n\n". Parse each one.
-        let sep;
-        while ((sep = buffer.indexOf("\n\n")) !== -1) {
-          const raw = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
-          // Each event is "data: <json>\n" (or multi-line).
-          const lines = raw.split("\n");
-          for (const ln of lines) {
-            if (!ln.startsWith("data:")) continue;
-            const payload = ln.slice(5).trim();
-            if (!payload) continue;
-            try {
-              const event = JSON.parse(payload);
-              handleEvent(event);
-              if (event.type === "stage_start") {
-                stageIndex++;
-                setStageStatus(stageIndex, "running");
-                logEvent(event.task, "Started", "info");
-              } else if (event.type === "stage_complete") {
-                const idx = document.querySelectorAll(".stage")
-                  .length; // compute actual index
-                // Find the running stage
-                const running = document.querySelector(".stage-running");
-                if (running) {
-                  const idx = parseInt(running.dataset.stage);
-                  setStageStatus(idx, event.succeeded ? "complete" : "error", event);
-                  logEvent(event.task,
-                    event.succeeded
-                      ? `Complete (${fmtTime(event.elapsed_seconds)}, ${event.tool_calls} calls)`
-                      : `Error: ${event.error || "unknown"}`,
-                    event.succeeded ? "success" : "error");
+          // SSE events are separated by "\n\n". Parse each one.
+          let sep;
+          while ((sep = buffer.indexOf("\n\n")) !== -1) {
+            const raw = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            // Each event is "data: <json>\n" (or multi-line).
+            const lines = raw.split("\n");
+            for (const ln of lines) {
+              if (!ln.startsWith("data:")) continue;
+              const payload = ln.slice(5).trim();
+              if (!payload) continue;
+              try {
+                const event = JSON.parse(payload);
+                handleEvent(event);
+                if (event.type === "stage_start") {
+                  stageIndex++;
+                  setStageStatus(stageIndex, "running");
+                  logEvent(event.task, "Started", "info");
+                } else if (event.type === "stage_complete") {
+                  const idx = document.querySelectorAll(".stage")
+                    .length; // compute actual index
+                  // Find the running stage
+                  const running = document.querySelector(".stage-running");
+                  if (running) {
+                    const idx = parseInt(running.dataset.stage);
+                    setStageStatus(idx, event.succeeded ? "complete" : "error", event);
+                    logEvent(event.task,
+                      event.succeeded
+                        ? `Complete (${fmtTime(event.elapsed_seconds)}, ${event.tool_calls} calls)`
+                        : `Error: ${event.error || "unknown"}`,
+                      event.succeeded ? "success" : "error");
+                  }
+                } else if (event.type === "pipeline_complete") {
+                  state.finalReport = event;
+                  $("pipeline-title").textContent =
+                    `Triage complete: ${event.document_id}`;
+                  $("pipeline-meta").textContent =
+                    `${fmtTime(event.total_elapsed_seconds)} total · ${fmtCost(event.total_cost_estimate)} estimated`;
+                  renderReport(event);
+                  logEvent("pipeline", "All stages complete", "success");
+                } else if (event.type === "error") {
+                  logEvent("error", event.error, "error");
+                  // Also surface the error in the status bar and the
+                  // currently-running stage so the user sees that
+                  // the pipeline didn't silently disappear. Without
+                  // this, the UI is stuck on "Running…" and
+                  // "Pending" forever, even though the server has
+                  // already errored out.
+                  $("pipeline-title").textContent = "Pipeline errored";
+                  const running = document.querySelector(".stage-running");
+                  if (running) {
+                    setStageStatus(parseInt(running.dataset.stage), "error", event);
+                  } else {
+                    // No running stage (e.g. errored in the SSE
+                    // plumbing itself, before any stage started).
+                    // Mark stage 0 as errored.
+                    setStageStatus(0, "error", event);
+                  }
+                  $("pipeline-meta").textContent = event.error || "Unknown error";
                 }
-              } else if (event.type === "pipeline_complete") {
-                state.finalReport = event;
-                $("pipeline-title").textContent =
-                  `Triage complete: ${event.document_id}`;
-                $("pipeline-meta").textContent =
-                  `${fmtTime(event.total_elapsed_seconds)} total · ${fmtCost(event.total_cost_estimate)} estimated`;
-                renderReport(event);
-                logEvent("pipeline", "All stages complete", "success");
-              } else if (event.type === "error") {
-                logEvent("error", event.error, "error");
+              } catch (e) {
+                console.warn("Failed to parse SSE event:", payload, e);
               }
-            } catch (e) {
-              console.warn("Failed to parse SSE event:", payload, e);
             }
           }
         }
+        if (done) break;
       }
     } catch (e) {
       logEvent("error", e.message, "error");

@@ -295,12 +295,14 @@ async def pipeline_stream(req: PipelineRequest) -> StreamingResponse:
         try:
             pipeline = TriagePipeline(
                 tools=tools,
-                config=PipelineConfig(auto_confirm=True),
+                config=PipelineConfig(
+                    auto_confirm=True,
+                    on_stage_complete=on_stage,
+                ),
             )
             report = pipeline.run(
                 document_id=req.document_id,
                 jurisdiction_notes=req.jurisdiction_notes,
-                on_stage_complete=on_stage,
             )
             pipeline_result["report"] = report
         except Exception as e:
@@ -318,7 +320,7 @@ async def pipeline_stream(req: PipelineRequest) -> StreamingResponse:
         # the pipeline starts, so we emit these optimistically.
         from dpo_agent.pipeline import DEFAULT_TRIAGE_PLAN
         for task in DEFAULT_TRIAGE_PLAN:
-            yield f"data: {json.dumps({'type': 'stage_start', 'task': task})}\\n\\n"
+            yield f"data: {json.dumps({'type': 'stage_start', 'task': task})}\n\n"
             # Small delay so the client renders them in order
             await asyncio.sleep(0.01)
 
@@ -326,7 +328,7 @@ async def pipeline_stream(req: PipelineRequest) -> StreamingResponse:
         while not pipeline_done.is_set() or not event_queue.empty():
             try:
                 event = event_queue.get(timeout=0.1)
-                yield f"data: {json.dumps(event)}\\n\\n"
+                yield f"data: {json.dumps(event)}\n\n"
             except queue.Empty:
                 await asyncio.sleep(0.05)
                 continue
@@ -334,7 +336,7 @@ async def pipeline_stream(req: PipelineRequest) -> StreamingResponse:
         # Drain any remaining events.
         while not event_queue.empty():
             event = event_queue.get_nowait()
-            yield f"data: {json.dumps(event)}\\n\\n"
+            yield f"data: {json.dumps(event)}\n\n"
 
         # Final event with the full report.
         if "report" in pipeline_result:
@@ -343,7 +345,7 @@ async def pipeline_stream(req: PipelineRequest) -> StreamingResponse:
             # client may want to fetch it via /pipeline/report
             # instead. But for typical contracts, embedding
             # in the SSE stream is fine.
-            yield f"data: {json.dumps({'type': 'pipeline_complete', 'document_id': report.document_id, 'total_elapsed_seconds': report.total_elapsed_seconds, 'total_cost_estimate': report.total_cost_estimate, 'markdown': report.markdown, 'json': report.json})}\\n\\n"
+            yield f"data: {json.dumps({'type': 'pipeline_complete', 'document_id': report.document_id, 'total_elapsed_seconds': report.total_elapsed_seconds, 'total_cost_estimate': report.total_cost_estimate, 'markdown': report.markdown, 'json': report.json})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

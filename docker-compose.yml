@@ -28,6 +28,13 @@ services:
     image: dpo-agent-web:latest
     container_name: dpo-agent-web
     restart: unless-stopped
+    # Load .env from the project root (gitignored). Provides
+    # the LLM API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY,
+    # OPENROUTER_API_KEY, LLM_MODEL, LLM_PROVIDER). The explicit
+    # env: block below provides defaults for Neo4j / Redis / log
+    # level when .env doesn't set them.
+    env_file:
+      - .env
     environment:
       # ── LLM provider credentials ──
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
