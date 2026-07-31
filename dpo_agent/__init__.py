@@ -52,6 +52,19 @@ Example (metadata):
 """
 
 from .agent import Agent, AgentConfig, ReviewResult
+from .llm_client import (
+    AnthropicClient,
+    LLMClient,
+    LLMResponse,
+    LLMStreamContext,
+    MockClient,
+    OpenAICompatClient,
+    StreamEvent,
+    TextBlock,
+    ToolUseBlock,
+    Usage,
+    create_client,
+)
 from .models import (
     all_resolved_models,
     resolve_model,
@@ -122,6 +135,18 @@ __all__ = [
     "all_resolved_models",
     "DEFAULT_MODELS",
     "ALL_KINDS",
+    # LLMClient abstraction (Path D — Anthropic / OpenAI-compat / Mock)
+    "LLMClient",
+    "LLMResponse",
+    "LLMStreamContext",
+    "AnthropicClient",
+    "OpenAICompatClient",
+    "MockClient",
+    "create_client",
+    "TextBlock",
+    "ToolUseBlock",
+    "Usage",
+    "StreamEvent",
     "StreamingConfig",
     # Results
     "ReviewResult",

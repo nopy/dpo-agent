@@ -19,7 +19,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import anthropic
+from .agent import AgentConfig, _content_to_anthropic_dict
+from .llm_client import LLMClient, TextBlock, ToolUseBlock, create_client
 
 from .agent import Agent, AgentConfig, ReviewResult
 from .models import resolve_model, resolve_optional_model
@@ -74,12 +75,17 @@ class AgentTwoPass:
         tools: DocumentTools,
         task: str = "dpo",
         config: TwoPassConfig | None = None,
-        client: anthropic.Anthropic | None = None,
+        client: LLMClient | Any | None = None,
     ):
         self.task = task
         self.tools_impl = tools
         self.config = config or TwoPassConfig()
-        self.client = client or anthropic.Anthropic()
+        # Accept LLMClient OR legacy anthropic.Anthropic.
+        if isinstance(client, LLMClient) or client is None:
+            self.client = client or create_client()
+        else:
+            from .agent import _wrap_anthropic_client
+            self.client = _wrap_anthropic_client(client)
         self.critique_prompt = load_prompt(task, "critique")
 
         # The pass-1 reviewer is a standard Agent.
@@ -167,38 +173,45 @@ class AgentTwoPass:
 
         for _ in range(self.config.max_iterations):
             response = self._call_critique(messages)
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({
+                "role": "assistant",
+                "content": _content_to_anthropic_dict(response.content),
+            })
 
             if response.stop_reason == "end_turn":
                 text = "".join(
                     block.text for block in response.content
-                    if block.type == "text"
+                    if isinstance(block, TextBlock)
                 )
                 return text, tool_calls
 
             if response.stop_reason == "tool_use":
                 tool_results = []
                 for block in response.content:
-                    if block.type == "tool_use":
-                        tool_calls += 1
-                        if block.name == "get_document_chunk_by_index":
-                            idx = block.input.get("index")
-                            if isinstance(idx, int):
-                                chunks_read.add(idx)
-                        try:
-                            result_text = dispatch(
-                                block.name, block.input, self.tools_impl
-                            )
-                            is_error = False
-                        except ToolError as e:
-                            result_text = f"Error: {e}"
-                            is_error = True
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result_text,
-                            **({"is_error": True} if is_error else {}),
-                        })
+                    if not isinstance(block, ToolUseBlock):
+                        continue
+                    tool_calls += 1
+                    if block.name == "get_document_chunk_by_index":
+                        idx = block.input.get("index")
+                        if isinstance(idx, int):
+                            chunks_read.add(idx)
+                    try:
+                        result_text = dispatch(
+                            block.name, block.input, self.tools_impl
+                        )
+                        is_error = False
+                    except ToolError as e:
+                        result_text = f"Error: {e}"
+                        is_error = True
+                    except Exception as e:
+                        result_text = f"Unexpected error: {e}"
+                        is_error = True
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result_text,
+                        **({"is_error": True} if is_error else {}),
+                    })
                 messages.append({"role": "user", "content": tool_results})
                 continue
 
@@ -214,7 +227,7 @@ class AgentTwoPass:
         kwargs: dict[str, Any] = {
             "model": self.config.critique_model or self.config.reviewer_model,
             "max_tokens": self.config.max_tokens,
-            "tools": TOOLS,
+            "tools": list(TOOLS),
             "messages": messages,
         }
         if self.config.cache_system_prompt:
@@ -225,7 +238,7 @@ class AgentTwoPass:
             }]
         else:
             kwargs["system"] = self.critique_prompt
-        return self.client.messages.create(**kwargs)
+        return self.client.create(**kwargs)
 
     def _build_critique_instruction(self, prior_review: str) -> str:
         """The user-message that triggers pass 2."""

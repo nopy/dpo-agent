@@ -22,10 +22,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import anthropic
-
-from .agent import AgentConfig
+from .agent import AgentConfig, _content_to_anthropic_dict
 from .exceptions import AgentStoppedError, MaxIterationsError, ToolError
+from .llm_client import LLMClient, create_client
 from .tasks.loader import load_prompt
 from .tools import TOOLS, DocumentTools, dispatch
 
@@ -56,7 +55,7 @@ class Navigator:
         task: str = "dpo",
         system_prompt: str | None = None,
         config: AgentConfig | None = None,
-        client: anthropic.Anthropic | None = None,
+        client: LLMClient | Any | None = None,
     ):
         self.task = task
         self.tools_impl = tools
@@ -64,7 +63,13 @@ class Navigator:
         self.config = config or AgentConfig(
             model=self.DEFAULT_NAVIGATOR_MODEL,
         )
-        self.client = client or anthropic.Anthropic()
+        # Accept LLMClient OR legacy anthropic.Anthropic.
+        if isinstance(client, LLMClient) or client is None:
+            self.client = client or create_client()
+        else:
+            # Wrap a legacy anthropic.Anthropic instance.
+            from .agent import _wrap_anthropic_client
+            self.client = _wrap_anthropic_client(client)
 
     def navigate(
         self,
@@ -95,12 +100,16 @@ class Navigator:
 
         for _ in range(self.config.max_iterations):
             response = self._call_model(messages)
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({
+                "role": "assistant",
+                "content": _content_to_anthropic_dict(response.content),
+            })
 
             if response.stop_reason == "end_turn":
+                from .llm_client import TextBlock
                 packet_text = "".join(
                     block.text for block in response.content
-                    if block.type == "text"
+                    if isinstance(block, TextBlock)
                 )
                 return NavigatorResult(
                     packet=packet_text,
@@ -110,28 +119,30 @@ class Navigator:
                 )
 
             if response.stop_reason == "tool_use":
+                from .llm_client import ToolUseBlock
                 tool_results = []
                 for block in response.content:
-                    if block.type == "tool_use":
-                        tool_calls += 1
-                        if block.name == "get_document_chunk_by_index":
-                            idx = block.input.get("index")
-                            if isinstance(idx, int):
-                                chunks_read.add(idx)
-                        try:
-                            result_text = dispatch(
-                                block.name, block.input, self.tools_impl
-                            )
-                            is_error = False
-                        except ToolError as e:
-                            result_text = f"Error: {e}"
-                            is_error = True
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result_text,
-                            **({"is_error": True} if is_error else {}),
-                        })
+                    if not isinstance(block, ToolUseBlock):
+                        continue
+                    tool_calls += 1
+                    if block.name == "get_document_chunk_by_index":
+                        idx = block.input.get("index")
+                        if isinstance(idx, int):
+                            chunks_read.add(idx)
+                    try:
+                        result_text = dispatch(
+                            block.name, block.input, self.tools_impl
+                        )
+                        is_error = False
+                    except ToolError as e:
+                        result_text = f"Error: {e}"
+                        is_error = True
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result_text,
+                        **({"is_error": True} if is_error else {}),
+                    })
                 messages.append({"role": "user", "content": tool_results})
                 continue
 
@@ -147,7 +158,7 @@ class Navigator:
         kwargs: dict[str, Any] = {
             "model": self.config.model,
             "max_tokens": self.config.max_tokens,
-            "tools": TOOLS,
+            "tools": list(TOOLS),
             "messages": messages,
         }
         if self.config.cache_system_prompt:
@@ -158,7 +169,7 @@ class Navigator:
             }]
         else:
             kwargs["system"] = self.system_prompt
-        return self.client.messages.create(**kwargs)
+        return self.client.create(**kwargs)
 
     def _build_user_message(
         self,

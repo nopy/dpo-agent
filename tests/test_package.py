@@ -43,7 +43,7 @@ def test_package_metadata():
     # PipelineConfig, PipelineStage, DEFAULT_TRIAGE_PLAN, triage)
     # + 5 model resolution (resolve_model, resolve_optional_model,
     # all_resolved_models, DEFAULT_MODELS, ALL_KINDS).
-    assert len(dpo_agent.__all__) == 36
+    assert len(dpo_agent.__all__) == 47  # 36 + 11 new LLMClient names
 
 
 def test_all_public_api_importable():

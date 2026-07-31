@@ -29,14 +29,23 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Iterator, Literal
+from typing import Any, Iterator, Literal
 
-import anthropic
-
+from .agent import _wrap_anthropic_client, Agent, AgentConfig, ReviewResult
 from .exceptions import AgentStoppedError, MaxIterationsError, ToolError
+from .llm_client import (
+    LLMClient,
+    STREAM_CONTENT_BLOCK_START,
+    STREAM_CONTENT_BLOCK_DELTA,
+    STREAM_MESSAGE_START,
+    STREAM_MESSAGE_STOP,
+    StreamEvent,
+    TextBlock,
+    ToolUseBlock,
+    create_client,
+)
 from .navigator import DPONavigator, NavigatorResult
 from .models import resolve_model, resolve_optional_model
-from .agent import Agent, AgentConfig, ReviewResult
 from .tools import TOOLS, DocumentTools, dispatch
 from .two_pass import DPOAgentTwoPass, TwoPassConfig, TwoPassResult
 
@@ -125,7 +134,7 @@ class StreamingAgent:
         tools: DocumentTools,
         task: str = "dpo",
         config: StreamingConfig | None = None,
-        client: anthropic.Anthropic | None = None,
+        client: LLMClient | Any | None = None,
     ):
         self.tools_impl = tools
         # If the user passed a config without task set, propagate.
@@ -135,7 +144,11 @@ class StreamingAgent:
             if not hasattr(config, "task") or config.task == "dpo":
                 config.task = task
             self.config = config
-        self.client = client or anthropic.Anthropic()
+        # Accept LLMClient OR legacy anthropic.Anthropic.
+        if isinstance(client, LLMClient) or client is None:
+            self.client = client or create_client()
+        else:
+            self.client = _wrap_anthropic_client(client)
 
     def review_streaming(
         self,
@@ -411,7 +424,19 @@ class StreamingAgent:
         text without tool calls).
         """
         elapsed = int((time.monotonic() - start) * 1000)
-        with self.client.messages.stream(
+        # The canonical LLMClient.stream() returns our own
+        # LLMStreamContext that yields StreamEvent objects. The
+        # canonical StreamEvent has text_delta, tool_input_json,
+        # tool_name, tool_use_id — not the Anthropic SDK's
+        # nested ev.content_block / ev.delta.* shape.
+        #
+        # Tool dispatch happens AFTER the stream completes (we
+        # get the final message via stream.get_final_message()).
+        # Under the old Anthropic SDK the dispatch was inline on
+        # content_block_stop. With the LLMClient abstraction we
+        # defer it to the end of the stream so the dispatch
+        # works the same way regardless of backend.
+        with self.client.stream(
             model=model,
             max_tokens=self.config.max_tokens,
             system=[{
@@ -419,110 +444,127 @@ class StreamingAgent:
                 "text": system_prompt,
                 "cache_control": {"type": self.config.cache_ttl},
             }],
-            tools=TOOLS,
+            tools=list(TOOLS),
             messages=messages,
         ) as stream:
+            current_tool_name: str | None = None
+            current_tool_id: str | None = None
+            current_tool_input_json = ""
+            tool_blocks: list[ToolUseBlock] = []
+            text_blocks: list[TextBlock] = []
+
             for ev in stream:
-                if ev.type == "content_block_start":
-                    block = ev.content_block
-                    if block.type == "tool_use":
-                        current_tool["current_tool_name"] = block.name
-                        current_tool["current_tool_id"] = block.id
-                        current_tool["current_tool_input_json"] = ""
+                evtype = ev.type
+                if evtype == STREAM_CONTENT_BLOCK_START:
+                    if ev.tool_name:
+                        current_tool_name = ev.tool_name
+                        current_tool_id = ev.tool_use_id
+                        current_tool_input_json = ""
                         yield AgentEvent(
                             type="tool_call_start", agent=agent,
-                            document_id=document_id, tool_name=block.name,
+                            document_id=document_id,
+                            tool_name=ev.tool_name,
                             tool_input={}, iteration=iteration,
                             elapsed_ms=elapsed,
                         )
-                    elif block.type == "text":
-                        current_tool["assistant_content"].append(block)
-                elif ev.type == "content_block_delta":
-                    delta = ev.delta
-                    if delta.type == "text_delta":
-                        current_tool["text_buf"] += delta.text
-                        if include_text_chunks:
-                            yield AgentEvent(
-                                type="text_chunk", agent=agent,
-                                document_id=document_id, text=delta.text,
-                                iteration=iteration, elapsed_ms=elapsed,
-                            )
-                        # Section detection for the reviewer stages.
+                elif evtype == STREAM_CONTENT_BLOCK_DELTA:
+                    if ev.text_delta:
+                        # Track text for section detection only.
                         if sections_seen is not None:
+                            current_tool["text_buf"] += ev.text_delta
                             for marker in SECTION_MARKERS:
                                 section = marker.replace("## ", "")
                                 if (marker in current_tool["text_buf"]
                                         and section not in sections_seen):
                                     sections_seen.add(section)
                                     yield AgentEvent(
-                                        type="section_complete", agent=agent,
+                                        type="section_complete",
+                                        agent=agent,
                                         document_id=document_id,
-                                        section=section, iteration=iteration,
+                                        section=section,
+                                        iteration=iteration,
                                         elapsed_ms=elapsed,
                                     )
-                    elif delta.type == "input_json_delta":
-                        current_tool["current_tool_input_json"] += delta.partial_json
-                elif ev.type == "content_block_stop":
-                    if current_tool["current_tool_name"] is not None:
-                        try:
-                            tool_input = json.loads(
-                                current_tool["current_tool_input_json"]
-                            ) if current_tool["current_tool_input_json"] else {}
-                        except json.JSONDecodeError:
-                            tool_input = {}
-                        try:
-                            result_text = dispatch(
-                                current_tool["current_tool_name"],
-                                tool_input, self.tools_impl,
+                        if include_text_chunks:
+                            yield AgentEvent(
+                                type="text_chunk", agent=agent,
+                                document_id=document_id,
+                                text=ev.text_delta,
+                                iteration=iteration, elapsed_ms=elapsed,
                             )
-                            error = None
-                        except ToolError as e:
-                            result_text = f"Error: {e}"
-                            error = str(e)
-                        yield AgentEvent(
-                            type="tool_call_complete", agent=agent,
-                            document_id=document_id,
-                            tool_name=current_tool["current_tool_name"],
-                            tool_input=tool_input,
-                            tool_result=result_text, error=error,
-                            iteration=iteration, elapsed_ms=elapsed,
+                    elif ev.tool_input_json and current_tool_name:
+                        current_tool_input_json += ev.tool_input_json
+
+            # Stream finished — get the final message and dispatch tools.
+            final_message = stream.get_final_message()
+
+            # Build assistant_content from the dataclass blocks.
+            from .agent import _content_to_anthropic_dict
+            messages.append({
+                "role": "assistant",
+                "content": _content_to_anthropic_dict(final_message.content),
+            })
+
+            # If the final message had tool_use blocks, dispatch each.
+            for block in final_message.content:
+                if isinstance(block, ToolUseBlock):
+                    tool_blocks.append(block)
+                elif isinstance(block, TextBlock):
+                    text_blocks.append(block)
+                    current_tool["assistant_content"].append(block)
+
+            if tool_blocks:
+                for tb in tool_blocks:
+                    tool_name = tb.name
+                    tool_id = tb.id
+                    tool_input = dict(tb.input)
+                    try:
+                        result_text = dispatch(
+                            tool_name, tool_input, self.tools_impl,
                         )
-                        current_tool["tool_results"].append({
-                            "type": "tool_result",
-                            "tool_use_id": current_tool["current_tool_id"],
-                            "content": result_text,
-                            **({"is_error": True} if error else {}),
-                        })
-                        # Reset for next tool in same turn.
-                        current_tool["current_tool_name"] = None
-                        current_tool["current_tool_id"] = None
-                        current_tool["current_tool_input_json"] = ""
-                elif ev.type == "message_stop":
-                    final_message = stream.get_final_message()
-                    # The streaming SDK already appended the
-                    # content blocks to current_tool["assistant_content"]
-                    # for us (via content_block_start), so we
-                    # reconstruct the assistant content from the
-                    # final message to be safe.
-                    messages.append({
-                        "role": "assistant",
-                        "content": final_message.content,
-                    })
-                    if final_message.stop_reason == "end_turn":
-                        current_tool["done"] = True
-                        return
-                    if final_message.stop_reason == "tool_use":
-                        messages.append({
-                            "role": "user",
-                            "content": current_tool["tool_results"],
-                        })
-                        # Reset for next iteration.
-                        current_tool["tool_results"] = []
-                        return
-                    raise AgentStoppedError(
-                        f"{agent} stopped unexpectedly: "
-                        f"stop_reason={final_message.stop_reason}"
+                        error = None
+                    except ToolError as e:
+                        result_text = f"Error: {e}"
+                        error = str(e)
+                    except Exception as e:
+                        result_text = f"Unexpected error: {e}"
+                        error = str(e)
+                    yield AgentEvent(
+                        type="tool_call_complete", agent=agent,
+                        document_id=document_id,
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                        tool_result=result_text, error=error,
+                        iteration=iteration, elapsed_ms=elapsed,
                     )
+                    current_tool["tool_results"].append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": result_text,
+                        **({"is_error": True} if error else {}),
+                    })
+                    if tool_name == "get_document_chunk_by_index":
+                        idx = tool_input.get("index")
+                        if isinstance(idx, int):
+                            current_tool.setdefault(
+                                "chunks_read", set()
+                            ).add(idx)
+
+            if final_message.stop_reason == "end_turn":
+                current_tool["done"] = True
+                return
+            if final_message.stop_reason == "tool_use":
+                messages.append({
+                    "role": "user",
+                    "content": current_tool["tool_results"],
+                })
+                # Reset for next iteration.
+                current_tool["tool_results"] = []
+                return
+            raise AgentStoppedError(
+                f"{agent} stopped unexpectedly: "
+                f"stop_reason={final_message.stop_reason}"
+            )
 
     def _build_user_message(
         self,
