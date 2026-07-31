@@ -85,6 +85,7 @@ from .llm import (
     MockLLM,
     OpenAIProvider,
     AnthropicProvider,
+    OpenRouterProvider,
     AgentLLMProvider,
     get_provider,
 )
@@ -143,6 +144,7 @@ __all__ = [
     "MockLLM",
     "OpenAIProvider",
     "AnthropicProvider",
+    "OpenRouterProvider",
     "AgentLLMProvider",
     "get_provider",
     # Resolve

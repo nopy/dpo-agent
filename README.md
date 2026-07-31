@@ -642,11 +642,57 @@ real LLM use:
 provider = get_provider("anthropic", model="claude-sonnet-4-5")
 # or
 provider = get_provider("openai", model="gpt-4o-mini")
+# or — OpenRouter routes to 100+ models via a single API key
+provider = get_provider("openrouter", model="anthropic/claude-sonnet-4")
 ```
+
+### OpenRouter
+
+[OpenRouter](https://openrouter.ai) is an OpenAI-compatible
+proxy that gives you access to 100+ models (Anthropic, OpenAI,
+Google, Meta, Mistral, etc.) through a single API key. The
+dpo-agent `OpenRouterProvider` is a thin wrapper over the
+OpenAI client pointed at `https://openrouter.ai/api/v1`.
+
+```bash
+# Get a key at https://openrouter.ai/keys
+export OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+```python
+from dpo_agent.kg import get_provider
+
+# Use any OpenRouter model by its provider/model-name
+provider = get_provider("openrouter", model="anthropic/claude-sonnet-4")
+provider = get_provider("openrouter", model="openai/gpt-4o")
+provider = get_provider("openrouter", model="google/gemini-2.5-pro")
+provider = get_provider("openrouter", model="meta-llama/llama-3.1-70b-instruct")
+
+# Or just rely on auto-mode (picks OpenRouter when OPENROUTER_API_KEY is set)
+provider = get_provider("auto")
+```
+
+OpenRouter's app-tracking headers (`HTTP-Referer`, `X-Title`)
+are set automatically; override with `app_url=` and `app_name=`:
+
+```python
+provider = OpenRouterProvider(
+    model="anthropic/claude-sonnet-4",
+    app_url="https://my-app.example.com",
+    app_name="my-app",
+)
+```
+
+Auto-mode priority: `ANTHROPIC > OPENROUTER > OPENAI > mock`.
+If you set both `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`,
+the Anthropic-direct path wins (no proxy latency). If you
+set both `OPENAI_API_KEY` and `OPENROUTER_API_KEY`, OpenRouter
+wins (you set it deliberately to route through OpenRouter).
 
 Optional deps (install with `pip install dpo-agent[server]`):
 - `openai` + `instructor` for OpenAIProvider
 - `anthropic` + `instructor` for AnthropicProvider
+- `openai` + `instructor` (same as OpenAI) for OpenRouterProvider
 
 See `dpo_agent/kg/` for the full Python API and
 `dpo_agent/tasks/kg_*/` for the LLM-driven layers.

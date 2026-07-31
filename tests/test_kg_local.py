@@ -400,15 +400,22 @@ def test_verifier_passes_valid_iso_date():
 # ─── dpo_agent.kg public API ──────────────────────────────────
 
 def test_dpo_agent_kg_public_api():
-    """dpo_agent.kg should expose the expected 41 names."""
+    """dpo_agent.kg should expose the expected public API names."""
     import dpo_agent.kg as kg
     assert kg.__version__ == "0.2.0"
-    assert len(kg.__all__) == 41
+    # 42 names: 4 ontology building blocks (DateField, MoneyAmount, etc.)
+    # + Contract + 11 enums (ContractType, PartyRole, 14 values)
+    # + 4 ingest types + 6 LLM-related (LLMProvider, MockLLM,
+    # OpenAIProvider, AnthropicProvider, OpenRouterProvider,
+    # AgentLLMProvider) + 4 store (GraphStore) + 6 resolve/update/verify
+    # + 3 retrieve (GraphQuery, Retriever, SubgraphSummary)
+    assert len(kg.__all__) == 42
     # Spot-check the key names
     assert "Contract" in kg.__all__
     assert "GraphStore" in kg.__all__
     assert "Verifier" in kg.__all__
     assert "MockLLM" in kg.__all__
+    assert "OpenRouterProvider" in kg.__all__
     assert "Retriever" in kg.__all__
     assert "resolve_parties" in kg.__all__
     assert "classify_update" in kg.__all__

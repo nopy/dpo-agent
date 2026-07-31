@@ -242,6 +242,110 @@ class OpenAIProvider(LLMProvider):
         )
 
 
+# ─── OpenRouter provider (OpenAI-compatible) ─────────────────────
+
+class OpenRouterProvider(LLMProvider):
+    """OpenRouter provider — multi-model proxy with OpenAI-compatible API.
+
+    OpenRouter (https://openrouter.ai) exposes the same
+    `/chat/completions` interface as OpenAI, but routes to
+    any of 100+ models (Anthropic, OpenAI, Google, Meta,
+    Mistral, etc.) using a single API key. Authentication is
+    via the `OPENROUTER_API_KEY` env var.
+
+    Model names use the OpenRouter convention
+    `provider/model-name`, e.g.:
+        - "anthropic/claude-sonnet-4"
+        - "openai/gpt-4o"
+        - "google/gemini-2.5-pro"
+        - "meta-llama/llama-3.1-70b-instruct"
+        - "mistralai/mistral-large-latest"
+
+    OpenRouter recommends (and some apps require) an
+    HTTP-Referer header to identify the calling app. The
+    default is the dpo-agent repo URL; override via the
+    `app_url` constructor arg.
+
+    Usage:
+        provider = OpenRouterProvider(model="anthropic/claude-sonnet-4")
+        # or
+        provider = get_provider("openrouter", model="anthropic/claude-sonnet-4")
+        # or
+        # Set OPENROUTER_API_KEY and call get_provider("auto")
+
+    Install:
+        pip install openai instructor
+
+    Environment:
+        OPENROUTER_API_KEY=<your-key>  # required
+    """
+
+    name = "openrouter"
+
+    DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+    DEFAULT_APP_URL = "https://github.com/nopy/dpo-agent"
+    DEFAULT_APP_NAME = "dpo-agent"
+
+    def __init__(
+        self,
+        model: str = "anthropic/claude-sonnet-4",
+        *,
+        base_url: Optional[str] = None,
+        app_url: Optional[str] = None,
+        app_name: Optional[str] = None,
+    ) -> None:
+        self.model = model
+        self.base_url = base_url or self.DEFAULT_BASE_URL
+        self.app_url = app_url or self.DEFAULT_APP_URL
+        self.app_name = app_name or self.DEFAULT_APP_NAME
+        try:
+            import instructor
+            from openai import OpenAI
+        except ImportError as e:
+            raise ImportError(
+                "openai and instructor are required for OpenRouterProvider. "
+                "Install with: pip install openai instructor"
+            ) from e
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY is not set. Get a key at "
+                "https://openrouter.ai/keys"
+            )
+        # OpenRouter requires the OpenAI client to be pointed at its
+        # endpoint. The `default_headers` add the recommended
+        # HTTP-Referer and X-Title headers for OpenRouter's app
+        # tracking and rate-limit attribution.
+        self._client = instructor.from_openai(OpenAI(
+            base_url=self.base_url,
+            api_key=api_key,
+            default_headers={
+                "HTTP-Referer": self.app_url,
+                "X-Title": self.app_name,
+            },
+        ))
+
+    def complete_structured(
+        self,
+        *,
+        system: str,
+        user: str,
+        response_model: Type[T],
+        schema_hint: Optional[str] = None,
+    ) -> T:
+        full_system = system
+        if schema_hint:
+            full_system += f"\n\n{schema_hint}"
+        return self._client.chat.completions.create(
+            model=self.model,
+            response_model=response_model,
+            messages=[
+                {"role": "system", "content": full_system},
+                {"role": "user", "content": user},
+            ],
+        )
+
+
 # ─── Anthropic provider (instructor) ───────────────────────────────
 
 class AnthropicProvider(LLMProvider):
@@ -320,15 +424,17 @@ class AgentLLMProvider(LLMProvider):
         # Anthropic's structured output (or OpenAI's) directly.
         # The dpo-agent tasks do the LLM work; this is a fallback
         # for the kgpipeline's Python code.
-        from .llm import OpenAIProvider, AnthropicProvider
+        from .llm import OpenAIProvider, AnthropicProvider, OpenRouterProvider
         if os.environ.get("ANTHROPIC_API_KEY"):
             provider = AnthropicProvider()
+        elif os.environ.get("OPENROUTER_API_KEY"):
+            provider = OpenRouterProvider()
         elif os.environ.get("OPENAI_API_KEY"):
             provider = OpenAIProvider()
         else:
             raise RuntimeError(
-                "No API key set. Set ANTHROPIC_API_KEY or OPENAI_API_KEY, "
-                "or use MockLLM for testing."
+                "No API key set. Set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, "
+                "or OPENAI_API_KEY, or use MockLLM for testing."
             )
         return provider.complete_structured(
             system=system, user=user,
@@ -343,13 +449,15 @@ def get_provider(name: str = "auto", **kwargs) -> LLMProvider:
 
     Args:
         name: "auto" (default, picks from env), "mock", "openai",
-              "anthropic", "dpo-agent".
+              "anthropic", "openrouter", "dpo-agent".
         **kwargs: provider-specific args (e.g. model="gpt-4o-mini").
     """
     name = name.lower()
     if name == "auto":
         if os.environ.get("ANTHROPIC_API_KEY"):
             name = "anthropic"
+        elif os.environ.get("OPENROUTER_API_KEY"):
+            name = "openrouter"
         elif os.environ.get("OPENAI_API_KEY"):
             name = "openai"
         else:
@@ -360,6 +468,11 @@ def get_provider(name: str = "auto", **kwargs) -> LLMProvider:
         return OpenAIProvider(**kwargs)
     if name == "anthropic":
         return AnthropicProvider(**kwargs)
+    if name == "openrouter":
+        return OpenRouterProvider(**kwargs)
     if name == "dpo-agent":
         return AgentLLMProvider(**kwargs)
-    raise ValueError(f"Unknown provider: {name}. Use 'auto', 'mock', 'openai', 'anthropic', or 'dpo-agent'.")
+    raise ValueError(
+        f"Unknown provider: {name}. Use 'auto', 'mock', 'openai', "
+        f"'anthropic', 'openrouter', or 'dpo-agent'."
+    )
