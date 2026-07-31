@@ -757,6 +757,52 @@ reduces self-evaluation bias). This is the standard
 "weak-strong" pattern from the GraphRAG + self-refine
 literature.
 
+### LLM backends (Anthropic / OpenAI-compat / Mock)
+
+The dpo-agent's tool-use loop is backend-agnostic. The
+`dpo_agent.llm_client.LLMClient` abstraction supports three
+backends:
+
+```python
+from dpo_agent import create_client
+
+# Auto-detect from env vars
+client = create_client()  # picks anthropic / openai-compat / mock
+
+# Or pick explicitly
+client = create_client(backend="anthropic")
+client = create_client(backend="openai-compat",
+                       base_url="https://openrouter.ai/api/v1")
+client = create_client(backend="mock")  # deterministic for tests
+```
+
+Auto-detect priority:
+
+1. `LLM_BACKEND` env var (explicit override)
+2. `ANTHROPIC_API_KEY` → `anthropic` (Anthropic direct)
+3. `OPENROUTER_API_KEY` → `openai-compat` with
+   `base_url=https://openrouter.ai/api/v1` and the
+   `HTTP-Referer` + `X-Title` headers OpenRouter expects
+4. `OPENAI_API_KEY` → `openai-compat`
+5. Otherwise → `mock` (no API key required; useful for tests)
+
+To use the dpo-agent with OpenRouter specifically, you only
+need to set `OPENROUTER_API_KEY` in `.env`. No code changes,
+no model-ID translation — the LLMClient handles the wire-
+format differences between the Anthropic and OpenAI SDKs
+internally. The dpo-agent's tool-use loop, prompt caching,
+and streaming patterns all work the same regardless of backend.
+
+### Custom LLM backends
+
+Subclass `dpo_agent.llm_client.LLMClient` to add a new
+backend (Together, Groq, local llama.cpp, etc.). Override
+`create()` to translate the canonical request to your API
+and return an `LLMResponse` with `TextBlock`/`ToolUseBlock`
+content. Override `stream()` to return an `LLMStreamContext`
+that yields `StreamEvent`s. See `AnthropicClient` and
+`OpenAICompatClient` for reference implementations.
+
 ## Docker Deployment
 
 The package ships a **production docker-compose stack** with
