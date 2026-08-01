@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -40,6 +40,12 @@ from dpo_agent import (
     list_tasks,
 )
 from dpo_agent.exceptions import DPOError
+from dpo_agent.upload_extract import (
+    ExtractionError,
+    SUPPORTED_EXTENSIONS,
+    UnsupportedFormatError,
+    extract_text,
+)
 
 from dpo_agent.examples.in_memory_tools import (
     InMemoryDocStore,
@@ -379,6 +385,98 @@ async def pipeline_blocking(req: PipelineRequest) -> dict:
 @app.get("/healthz")
 async def healthz() -> dict:
     return {"status": "ok"}
+
+
+# Max upload size. The browser-side check is 5 MB (per app.js),
+# but the server allows larger because some users may want
+# to upload large contracts and let the dpo-agent handle
+# them chunked. 50 MB is generous; PDFs of 1k+ pages usually
+# fit well under this.
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+@app.post("/contract/upload")
+async def upload_contract(
+    file: UploadFile = File(..., description="Contract file (PDF, DOCX, MD, TXT, HTML)"),
+) -> dict:
+    """Upload a contract file and return its extracted text.
+
+    Accepts multipart/form-data with a single `file` field.
+    Returns JSON with the extracted `text`, plus metadata:
+    filename, size (bytes), and the inferred format.
+
+    The frontend uses this for PDF and DOCX files (which the
+    browser can't read as text). Plain-text formats (.md,
+    .txt) are handled client-side via FileReader and don't
+    hit this endpoint, but we accept them here too for
+    flexibility.
+
+    Errors:
+    - 400: unsupported extension
+    - 413: file too large (>50 MB)
+    - 422: extraction failed (corrupt file, encrypted DOCX,
+            scanned PDF with no text layer, etc.)
+    - 503: parser library not installed server-side
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+
+    # Read content. Use upload.read() rather than reading
+    # file.file directly because FastAPI's UploadFile
+    # buffering manages memory limits internally.
+    content = await file.read()
+
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large: {len(content)} bytes "
+            f"(limit is {MAX_UPLOAD_BYTES})",
+        )
+
+    try:
+        text = extract_text(content, file.filename)
+    except UnsupportedFormatError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unsupported_format",
+                "message": str(e),
+                "supported_formats": sorted(SUPPORTED_EXTENSIONS),
+            },
+        ) from e
+    except ExtractionError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "extraction_failed",
+                "message": str(e),
+                "filename": file.filename,
+            },
+        ) from e
+    except ValueError as e:
+        # max_bytes exceeded inside the extractor
+        raise HTTPException(
+            status_code=413,
+            detail=str(e),
+        ) from e
+
+    # Trivial metadata: which format was used. We infer from
+    # the file extension to keep the response lightweight
+    # (the actual chunks aren't requested).
+    lower = file.filename.lower()
+    format_used = "unknown"
+    for ext in SUPPORTED_EXTENSIONS:
+        if lower.endswith(ext):
+            format_used = ext.lstrip(".")
+            break
+
+    return {
+        "text": text,
+        "filename": file.filename,
+        "size": len(content),
+        "format": format_used,
+        "char_count": len(text),
+    }
 
 
 # Static-file mount for the web frontend. Must be last — FastAPI

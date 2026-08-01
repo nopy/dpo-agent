@@ -233,6 +233,9 @@ The `docker-compose.yml` runs:
 - `POST /review/stream` — single-task SSE stream
 - `POST /pipeline` — full 5-stage triage (blocking)
 - `POST /pipeline/stream` — full 5-stage triage with SSE events
+- `POST /contract/upload` — multipart file upload; returns
+  extracted text as JSON. Supports `.pdf`, `.docx`, `.html`,
+  `.htm`, `.md`, `.txt`, `.markdown`
 
 SSE events: `stage_start`, `stage_complete`, `pipeline_complete`,
 `error`. The web frontend JS (`dpo_agent/web/app.js`) handles each
@@ -248,17 +251,32 @@ The frontend has two modes for contract input:
    into a textarea **or upload a file** via drag-and-drop or
    click-to-pick.
 
-The file upload is **client-side** — files are read with
-`FileReader.readAsText()` and the contents go into the same
-textarea. No new server endpoint needed; the existing
-`PipelineRequest.inline_text` field carries the contract
-text. Supported extensions: `.md`, `.markdown`, `.txt`. Max
-5 MB (browser-side validation).
+File upload routes via two paths:
 
-To extend to PDFs/DOCX, add a new endpoint (e.g. `POST
-/contract/upload`) that accepts the file via multipart and
-runs `dpo_agent/kg/ingest.py` parsers server-side. Wire it in
-by extending `setupUpload()` in `dpo_agent/web/app.js`.
+- **Plain text formats** (`.md`, `.markdown`, `.txt`) are
+  read by the browser via `FileReader.readAsText()` — no
+  server round-trip, instant.
+- **Binary formats** (`.pdf`, `.docx`, `.html`, `.htm`) are
+  POSTed as multipart to `/contract/upload` for server-side
+  parsing by `pdfplumber` / `python-docx` / `BeautifulSoup`.
+  The extracted text (with `<!-- Page N -->` markers) fills
+  the same textarea.
+
+Both paths land in `#inline-text` and the existing
+`PipelineRequest.inline_text` field carries the contract
+text. The `setupUpload()` function in `app.js` dispatches
+to the right path based on the file extension (the
+`SERVER_PARSE_EXTS` set).
+
+The browser enforces a 5 MB cap (visual warning in the
+upload zone). The server enforces a 50 MB cap (returns 413
+on oversize). Server-side errors (corrupt PDF, encrypted
+DOCX) return 422 and surface as inline errors in the UI.
+
+To add a new binary format: extend `SUPPORTED_EXTENSIONS` in
+`dpo_agent/upload_extract.py`, add an `if ext == ".newfmt"`
+branch in `extract_text()`, install the parser library, and
+add it to `pyproject.toml`'s `dependencies`.
 
 ## 8. Common pitfalls
 

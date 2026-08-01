@@ -355,6 +355,19 @@ html, body {
   width: 100%;
 }
 
+.upload-status {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  width: 100%;
+  font-style: italic;
+}
+
+.upload-zone-upload-progress {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
 /* TABS */
 .tabs {
   display: flex;

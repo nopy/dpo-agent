@@ -1024,20 +1024,52 @@ The contract input has two modes:
    contract can be either pasted into a textarea or **uploaded
    as a file**.
 
-The upload zone accepts `.md`, `.markdown`, and `.txt` files
-up to 5 MB. Drag-and-drop or click-to-pick both work. When a
-file is selected:
+The upload zone accepts `.md`, `.markdown`, `.txt`, `.pdf`,
+`.docx`, `.html`, and `.htm` files up to 5 MB. Drag-and-drop
+or click-to-pick both work. When a file is selected:
 
-- The file's text is read in the browser (no server round-trip)
-- The Document ID is auto-set from the filename slug
+- `.md`/`.txt`/`.markdown` are read directly in the browser
+  via `FileReader.readAsText()` — instant, no network.
+- `.pdf`/`.docx`/`.html` POST to the FastAPI server's
+  `POST /contract/upload` endpoint, which uses
+  `pdfplumber`/`python-docx`/`BeautifulSoup` to extract
+  text. The extracted text fills the textarea along with
+  page/section markers (`<!-- Page 1 -->`, etc.) so the
+  dpo-agent's LLM can see document structure.
+- The Document ID is auto-set from the filename slug.
 - A chip appears showing the filename + size, with a × button
-  to clear the upload
+  to clear the upload.
+- The log panel records `Parsed <file>` with the byte counts
+  and the inferred format (e.g. `pdf`, `docx`).
 
-Supported file types are the ones that can be processed
-directly as plain text. PDFs and DOCX would require server-side
-parsing (the `dpo_agent/kg/ingest.py` module has parsers for
-those — to enable them, you can extend `setupUpload()` in
-`dpo_agent/web/app.js` to POST the file to a new endpoint).
+The browser enforces a 5 MB cap. The server allows up to
+50 MB (configurable via `MAX_UPLOAD_BYTES` in
+`dpo_agent/examples/fastapi_server.py`). PDFs with embedded
+scans return 422 (extraction_failed); the user sees an inline
+error in the upload zone.
+
+### Upload endpoint
+
+```
+POST /contract/upload
+Content-Type: multipart/form-data
+
+  file: <binary>
+
+→ 200 {"text": "...", "filename": "...", "size": N,
+       "format": "pdf", "char_count": N}
+→ 400 unsupported format
+→ 413 file too large (>50 MB)
+→ 422 extraction failed (corrupt PDF, encrypted DOCX, etc.)
+```
+
+The endpoint is implemented at `dpo_agent.upload_extract`
+(text extraction) + `POST /contract/upload` in the FastAPI
+example server. To call it from another client:
+
+```bash
+curl -X POST -F "file=@contract.pdf" http://localhost/contract/upload
+```
 
 ### Adding a new task
 

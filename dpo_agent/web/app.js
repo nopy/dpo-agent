@@ -475,7 +475,17 @@
   // the contract text via the PipelineRequest.inline_text field,
   // so the rest of the pipeline path is unchanged.
   const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;  // 5 MB cap
-  const UPLOAD_ACCEPT_EXTS = new Set([".md", ".markdown", ".txt"]);
+  // All extensions accepted by the file input. Text formats
+  // can be read with FileReader; PDF/DOCX must POST to the
+  // /contract/upload endpoint for server-side parsing.
+  const UPLOAD_ACCEPT_EXTS = new Set([
+    ".md", ".markdown", ".txt",
+    ".pdf", ".docx",
+    ".html", ".htm",
+  ]);
+  // Extensions routed through /contract/upload. Plain text
+  // formats skip the round-trip and read via FileReader.
+  const SERVER_PARSE_EXTS = new Set([".pdf", ".docx", ".html", ".htm"]);
 
   /**
    * Sets up the file input, drag-drop zone, and clear button.
@@ -534,9 +544,11 @@
     }
 
     /**
-     * Validate a File object and read its text. Then route into
-     * the textarea. Errors are surfaced via the upload-zone-error
-     * visual style.
+     * Validate a File object, then either read it (text
+     * formats) or POST it to /contract/upload (PDF/DOCX/HTML)
+     * for server-side parsing. Either way the result lands
+     * in the #inline-text textarea. Errors surface via the
+     * upload-zone-error style.
      */
     function handleFile(file) {
       if (!file) return;
@@ -548,7 +560,8 @@
       const ext = lowerName.match(/\.[^.]+$/);
       if (!ext || !UPLOAD_ACCEPT_EXTS.has(ext[0])) {
         showUploadError(
-          `Unsupported file type: ${file.name}. Use .md, .markdown, or .txt.`
+          `Unsupported file type: ${file.name}. ` +
+          `Use .md, .markdown, .txt, .pdf, .docx, .html, or .htm.`
         );
         return;
       }
@@ -560,6 +573,18 @@
         return;
       }
 
+      if (SERVER_PARSE_EXTS.has(ext[0])) {
+        handleServerParsedFile(file);
+      } else {
+        handleTextFile(file);
+      }
+    }
+
+    /**
+     * Read a plain-text file (md/txt/markdown) directly via
+     * FileReader — no server round-trip.
+     */
+    function handleTextFile(file) {
       const reader = new FileReader();
       reader.onload = () => {
         try {
@@ -578,6 +603,94 @@
         showUploadError(`Failed to read file: ${reader.error || "unknown error"}`);
       };
       reader.readAsText(file);
+    }
+
+    /**
+     * POST a binary file (PDF/DOCX/HTML) to /contract/upload.
+     * Server-side pdfplumber/python-docx parse it and return
+     * extracted text as JSON. We then populate the textarea
+     * with the result.
+     */
+    function handleServerParsedFile(file) {
+      // Show a spinner-style "uploading…" message instead of
+      // leaving the user guessing what happened during parsing.
+      uploadZone.classList.add("upload-zone-uploading");
+      const uploading = document.createElement("div");
+      uploading.className = "upload-status";
+      uploading.id = "upload-status-pending";
+      uploading.textContent = `Uploading ${file.name}…`;
+      uploadZone.appendChild(uploading);
+
+      const formData = new FormData();
+      formData.append("file", file, file.name);
+
+      fetch("/contract/upload", {
+        method: "POST",
+        body: formData,
+      })
+        .then(async (r) => {
+          // Always tear down the pending status, regardless
+          // of whether the upload succeeded or failed.
+          const pending = document.getElementById(
+            "upload-status-pending"
+          );
+          if (pending) pending.remove();
+          uploadZone.classList.remove("upload-zone-uploading");
+
+          if (!r.ok) {
+            // Try to parse the JSON error from FastAPI.
+            let detail = `Server returned ${r.status}`;
+            try {
+              const body = await r.json();
+              if (body && body.detail) {
+                if (typeof body.detail === "string") {
+                  detail = body.detail;
+                } else if (body.detail && body.detail.message) {
+                  detail = body.detail.message;
+                  if (body.detail.supported_formats) {
+                    detail += ` Supported: ${
+                      body.detail.supported_formats.join(", ")
+                    }`;
+                  }
+                }
+              }
+            } catch (_e) {
+              // Body wasn't JSON — keep the status-code message.
+            }
+            showUploadError(detail);
+            return;
+          }
+          return r.json();
+        })
+        .then((data) => {
+          if (!data) return;
+          const text = data.text || "";
+          if (!text.trim()) {
+            showUploadError(
+              `Server returned empty text for ${file.name}. ` +
+              `The file may be scanned/image-based.`
+            );
+            return;
+          }
+          applyFileToTextarea(file.name, text);
+          logEvent(
+            "upload",
+            `Parsed ${file.name} (${formatBytes(file.size)} ` +
+            `→ ${formatBytes(data.char_count)} text, ${data.format})`,
+            "info"
+          );
+        })
+        .catch((err) => {
+          // Network failure (offline, DNS, etc.) — not a server
+          // response.
+          showUploadError(
+            `Network error uploading ${file.name}: ${err.message || err}`
+          );
+        });
+
+      // Reset the file input so picking the same file twice
+      // triggers a fresh change event.
+      fileInput.value = "";
     }
 
     // File input change (click-to-pick).

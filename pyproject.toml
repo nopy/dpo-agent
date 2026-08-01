@@ -17,7 +17,10 @@ dependencies = [
     "anthropic>=0.40",
     "openai>=1.0",  # for OpenRouter / OpenAI-compat backend
     "pydantic>=2.0",
-]
+    "pdfplumber>=0.10",  # for /contract/upload PDF parsing
+    "python-docx>=1.1",  # for /contract/upload DOCX parsing
+    "python-multipart>=0.0.9",  # FastAPI File / UploadFile support
+]  
 
 # Optional dependencies (install with `pip install dpo-agent[server]`)
 [project.optional-dependencies]
