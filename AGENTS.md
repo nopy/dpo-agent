@@ -241,7 +241,41 @@ SSE events: `stage_start`, `stage_complete`, `pipeline_complete`,
 `error`. The web frontend JS (`dpo_agent/web/app.js`) handles each
 in `handleEvent()`-style dispatch.
 
-### 7a. Web Modes (bundled example vs. uploaded/pasted contract)
+### 7a. Per-stage expand panel (live SSE event stream)
+
+Each `.stage` row in the progress panel has a `▶` chevron button
+that opens a hidden event-stream panel below the row. When
+clicked:
+
+1. The chevron rotates 90° (▶ → ▼) via CSS transform.
+2. The `.stage-event-stream` panel below the row becomes visible.
+3. A new SSE connection is opened to `/review/stream` for
+   that specific task (not `/pipeline/stream`).
+4. StreamingAgent events arrive as live rows in the panel:
+   - `agent_start` — green badge, agent name + doc id
+   - `tool_call_start` — blue badge, tool name + input preview
+   - `tool_call_complete` — green badge, tool name + output preview
+   - `text_chunk` — dim badge, streaming text delta
+   - `section_complete` — purple badge, section heading
+   - `agent_complete` — green badge, token usage
+   - `agent_error` — red badge, error message
+5. The panel auto-scrolls to the bottom on each new event.
+6. Collapsing the panel (`▶` again) closes the SSE via
+   `AbortController.abort()`. No connection leaks.
+
+The per-stage stream is **independent of the main pipeline
+stream** — a user can expand a stage before clicking "Run"
+and see the per-task events in isolation. If they then click
+"Run" while a stage is expanded, both feeds coexist (the
+pipeline aggregate `stage_start` / `stage_complete` events
+appear in the live log; the per-task tool-call events appear
+in the expanded panel).
+
+Cost control: only expanded stages stream. Collapsed stages
+don't trigger any API calls. The user explicitly opts in by
+clicking ▶.
+
+### 7b. Web Modes (bundled example vs. uploaded/pasted contract)
 
 The frontend has two modes for contract input:
 

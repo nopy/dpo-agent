@@ -428,7 +428,7 @@ html, body {
 
 .stage {
   display: grid;
-  grid-template-columns: 32px 1fr 120px 100px;
+  grid-template-columns: 28px 28px 1fr 120px 100px;
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
@@ -491,6 +491,148 @@ html, body {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/* STAGE EXPAND — per-stage SSE event stream panel.
+   Each `.stage` becomes a flex column when expanded: the
+   row (icon + name + status + progress) on top, then a
+   full-width event log below. The expand chevron rotates
+   90° when open. */
+
+.stage.stage-expanded {
+  /* When expanded, the row stays the same, but the
+     event-stream child flows underneath, full width. */
+  grid-template-areas:
+    "expand icon name status progress"
+    "stream stream stream stream stream";
+  grid-template-columns: 28px 28px 1fr 120px 100px;
+  grid-template-rows: auto auto;
+  row-gap: 10px;
+}
+
+.stage-expand {
+  grid-area: expand;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: color 0.15s, border-color 0.15s;
+}
+.stage-expand:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+.stage-expand-icon {
+  display: inline-block;
+  transition: transform 0.18s ease-out;
+  font-size: 10px;
+  line-height: 1;
+}
+.stage-expanded .stage-expand-icon {
+  transform: rotate(90deg);
+}
+.stage-expanded .stage-expand {
+  color: var(--running);
+}
+
+.stage-event-stream {
+  grid-area: stream;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-top: 4px;
+  /* Cap the height — the panel scrolls when full. */
+  max-height: 280px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.stage-event-stream[hidden] {
+  display: none;
+}
+
+.stage-event-log {
+  /* The actual scrolling log. */
+}
+.stage-event-log .log-empty {
+  font-style: italic;
+  color: var(--text-faint);
+  margin: 0;
+}
+
+.event-line {
+  /* Each rendered SSE event gets one of these rows. */
+  padding: 2px 0;
+  border-bottom: 1px dotted var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.event-line:last-child {
+  border-bottom: none;
+}
+.event-line .event-type {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  margin-right: 6px;
+  text-transform: lowercase;
+  background: var(--bg-input);
+  color: var(--text-dim);
+}
+.event-line .event-type.tool_call_start {
+  background: rgba(96, 165, 250, 0.18);
+  color: var(--running);
+}
+.event-line .event-type.tool_call_complete {
+  background: rgba(74, 222, 128, 0.18);
+  color: var(--success);
+}
+.event-line .event-type.text_chunk {
+  background: var(--bg-input);
+  color: var(--text-dim);
+}
+.event-line .event-type.section_complete {
+  background: rgba(167, 139, 250, 0.18);
+  color: var(--text);
+}
+.event-line .event-type.agent_complete {
+  background: rgba(74, 222, 128, 0.18);
+  color: var(--success);
+}
+.event-line .event-type.agent_error {
+  background: rgba(248, 113, 113, 0.18);
+  color: var(--error);
+}
+.event-line .event-meta {
+  color: var(--text-faint);
+  font-size: 10px;
+  margin-left: 6px;
+}
+.event-line .event-tool-name {
+  color: var(--running);
+  font-weight: 600;
+}
+.event-line .event-tool-input {
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  margin-top: 2px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  max-height: 80px;
+  overflow-y: auto;
 }
 
 /* LIVE LOG */

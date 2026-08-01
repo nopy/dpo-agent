@@ -1122,6 +1122,47 @@ or click-to-pick both work. When a file is selected:
   via `FileReader.readAsText()` — instant, no network.
 - `.pdf`/`.docx`/`.html` POST to the FastAPI server's
   `POST /contract/upload` endpoint, which uses
+  `pdfplumber` / `python-docx` / `BeautifulSoup` to extract
+  text. The extracted text fills the textarea along with
+  page/section markers (`<!-- Page 1 -->`, etc.) so the
+  downstream pipeline keeps its structure.
+
+### Per-stage expand panel
+
+The progress panel (top tab of the right-hand side) shows
+the 5 default pipeline stages as collapsible rows. Each row
+has a `▶` chevron button on the left side. Clicking it
+opens a live SSE event stream for **just that one task**:
+
+```
+▼  summarize                                          Complete
+   18.2s · 12 tool calls
+   ┌──────────────────────────────────────────────┐
+   │ agent_start  agent=navigator, doc=example-dpa │
+   │ tool_call_start  get_document_chunk_by_index  │
+   │   {"index": 0}                                │
+   │ tool_call_complete  get_document_chunk_by...  │
+   │   ↳ "MASTER SERVICES AGREEMENT..."            │
+   │ text_chunk  This agreement is entered into... │
+   │ section_complete  TL;DR                      │
+   │ agent_complete  tokens: in=2,431 out=850     │
+   └──────────────────────────────────────────────┘
+```
+
+Each event is rendered with a colored badge based on its
+type (`tool_call_start` in blue, `agent_complete` in green,
+`agent_error` in red, etc.). Tool calls show their input
+arguments inline; text chunks stream live.
+
+**Cost control**: only expanded stages stream. Collapsed
+stages don't trigger any API calls — the user explicitly
+opts in by clicking `▶`. If the user clicks "Run pipeline"
+while a stage is expanded, both feeds coexist (the aggregate
+pipeline events appear in the live log, the per-task events
+in the expanded panel).
+
+The SSE connection is closed via `AbortController` when
+the panel collapses, so there are no connection leaks.
   `pdfplumber`/`python-docx`/`BeautifulSoup` to extract
   text. The extracted text fills the textarea along with
   page/section markers (`<!-- Page 1 -->`, etc.) so the

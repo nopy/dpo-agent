@@ -262,11 +262,19 @@
   function resetUI() {
     state.currentStages = [];
     state.finalReport = null;
+    // Close any per-stage SSE streams from a prior run.
+    closeAllStageStreams();
     document.querySelectorAll(".stage").forEach(s => {
       s.classList.remove("stage-running", "stage-complete", "stage-error");
       s.classList.add("stage-pending");
       s.querySelector(".stage-status").textContent = "Pending";
       s.querySelector(".stage-progress").textContent = "";
+      // Clear the per-stage event log if the panel is open.
+      const logEl = s.querySelector(".stage-event-log");
+      if (logEl) {
+        logEl.innerHTML =
+          '<p class="log-empty">Click ▶ to start streaming this task.</p>';
+      }
     });
     $("live-log").innerHTML =
       '<p class="log-empty">Click "Run triage pipeline" to start.</p>';
@@ -486,6 +494,263 @@
   // Extensions routed through /contract/upload. Plain text
   // formats skip the round-trip and read via FileReader.
   const SERVER_PARSE_EXTS = new Set([".pdf", ".docx", ".html", ".htm"]);
+
+  // ---- Per-stage expand → SSE event stream ----
+  //
+  // Each stage in the progress panel has an expand chevron.
+  // When the user clicks it, a hidden panel slides open below
+  // the stage row and connects to `/review/stream` for that
+  // task. The streamed events (tool calls, text chunks,
+  // sections) are rendered as they arrive.
+  //
+  // Cost-control: this only happens for stages the user has
+  // explicitly expanded. Collapsed stages don't trigger any
+  // streaming. If the user clicks Run Pipeline while a stage
+  // is expanded, the per-stage stream runs IN PARALLEL with
+  // the pipeline's own SSE — both feeds are visible.
+
+  // Per-stage SSE state. Keyed by stage idx. Each entry
+  // holds the active abort controller so we can close it on
+  // collapse or on a new run.
+  const stageStreams = new Map(); // idx -> { controller }
+
+  function setupStageExpand() {
+    document.querySelectorAll(".stage-expand").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const idx = parseInt(btn.getAttribute("data-expand"));
+        const stageEl = document.querySelector(
+          `.stage[data-stage="${idx}"]`
+        );
+        if (!stageEl) return;
+        const streamEl = stageEl.querySelector(
+          `.stage-event-stream[data-stream="${idx}"]`
+        );
+        const isOpen = !streamEl.hidden;
+        if (isOpen) {
+          // Collapse: hide the panel and stop the SSE.
+          streamEl.hidden = true;
+          stageEl.classList.remove("stage-expanded");
+          closeStageStream(idx);
+        } else {
+          // Expand: show the panel and start the SSE.
+          streamEl.hidden = false;
+          stageEl.classList.add("stage-expanded");
+          openStageStream(idx);
+        }
+      });
+    });
+  }
+
+  async function openStageStream(idx) {
+    if (stageStreams.has(idx)) return;
+
+    const stageEl = document.querySelector(
+      `.stage[data-stage="${idx}"]`
+    );
+    const taskName = stageEl ? stageEl.getAttribute("data-task") : null;
+    if (!taskName) return;
+
+    const useInline = !$("inline-section").classList.contains("hidden");
+    const body = {
+      task: taskName,
+      document_id: $("document-id").value,
+      jurisdiction_notes: $("jurisdiction").value,
+    };
+    if (useInline && $("inline-text").value.trim()) {
+      body.inline_text = $("inline-text").value;
+    }
+
+    const controller = new AbortController();
+    stageStreams.set(idx, { controller });
+
+    const logEl = document.querySelector(
+      `.stage-event-log[data-log="${idx}"]`
+    );
+    if (logEl) {
+      logEl.innerHTML = "";
+      appendEventLog(idx, { type: "connecting", agent: taskName });
+    }
+
+    try {
+      const r = await fetch("/review/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!r.ok) {
+        appendEventLog(idx, {
+          type: "agent_error",
+          message: `Server returned ${r.status}`,
+        });
+        return;
+      }
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          let sep;
+          while ((sep = buffer.indexOf("\n\n")) !== -1) {
+            const raw = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            for (const ln of raw.split("\n")) {
+              if (!ln.startsWith("data:")) continue;
+              const payload = ln.slice(5).trim();
+              if (!payload) continue;
+              try {
+                const event = JSON.parse(payload);
+                renderStageEvent(idx, event);
+              } catch (_e) {
+                /* skip malformed */
+              }
+            }
+          }
+        }
+        if (done) break;
+      }
+    } catch (e) {
+      if (e && e.name !== "AbortError") {
+        appendEventLog(idx, {
+          type: "agent_error",
+          message: String(e.message || e),
+        });
+      }
+    } finally {
+      stageStreams.delete(idx);
+    }
+  }
+
+  function closeStageStream(idx) {
+    const entry = stageStreams.get(idx);
+    if (entry && entry.controller) {
+      try { entry.controller.abort(); } catch (_e) { /* ignore */ }
+    }
+    stageStreams.delete(idx);
+  }
+
+  function closeAllStageStreams() {
+    for (const idx of Array.from(stageStreams.keys())) {
+      closeStageStream(idx);
+    }
+  }
+
+  function renderStageEvent(idx, event) {
+    const logEl = document.querySelector(
+      `.stage-event-log[data-log="${idx}"]`
+    );
+    if (!logEl) return;
+    // Trim the leading "Connecting…" line on the first real
+    // event so the log doesn't start with a stale placeholder.
+    if (
+      logEl.children.length === 1 &&
+      logEl.firstChild.classList.contains("event-line-connecting")
+    ) {
+      logEl.innerHTML = "";
+    }
+    appendEventLog(idx, event);
+  }
+
+  function appendEventLog(idx, event) {
+    const logEl = document.querySelector(
+      `.stage-event-log[data-log="${idx}"]`
+    );
+    if (!logEl) return;
+    const line = document.createElement("div");
+    line.className = "event-line";
+    if (event.type === "connecting") {
+      line.classList.add("event-line-connecting");
+    }
+
+    const typeBadge = document.createElement("span");
+    typeBadge.className = `event-type ${event.type}`;
+    typeBadge.textContent = event.type;
+    line.appendChild(typeBadge);
+
+    // Per-event-type detail rendering.
+    if (event.type === "agent_start") {
+      const meta = document.createElement("span");
+      meta.className = "event-meta";
+      meta.textContent =
+        `agent=${event.agent || "?"}, doc=${event.document_id || "?"}`;
+      line.appendChild(meta);
+    } else if (event.type === "tool_call_start") {
+      const tool = document.createElement("span");
+      tool.className = "event-tool-name";
+      tool.textContent = event.name || "(tool)";
+      line.appendChild(tool);
+      if (event.input) {
+        const inp = document.createElement("div");
+        inp.className = "event-tool-input";
+        inp.textContent = formatToolInput(event.input);
+        line.appendChild(inp);
+      }
+    } else if (event.type === "tool_call_complete") {
+      const tool = document.createElement("span");
+      tool.className = "event-tool-name";
+      tool.textContent = event.name || "(tool)";
+      line.appendChild(tool);
+      if (event.output_preview) {
+        const out = document.createElement("div");
+        out.className = "event-tool-input";
+        out.textContent = `↳ ${String(event.output_preview).slice(0, 200)}`;
+        line.appendChild(out);
+      }
+    } else if (event.type === "text_chunk") {
+      const text = document.createElement("span");
+      text.textContent = event.text || "";
+      line.appendChild(text);
+    } else if (event.type === "section_complete") {
+      const head = document.createElement("span");
+      head.textContent = event.heading || "(section)";
+      line.appendChild(head);
+    } else if (event.type === "agent_complete") {
+      const meta = document.createElement("span");
+      meta.className = "event-meta";
+      meta.textContent =
+        `tokens: in=${event.input_tokens ?? "?"}, ` +
+        `out=${event.output_tokens ?? "?"}`;
+      line.appendChild(meta);
+    } else if (event.type === "agent_error") {
+      const msg = document.createElement("span");
+      msg.style.color = "var(--error)";
+      // StreamingAgent emits either `message` (LLMClient) or
+      // `error` (StreamingAgent's two-pass code). Prefer message;
+      // fall back to error; fall back to a full JSON dump.
+      msg.textContent =
+        event.message ||
+        event.error ||
+        JSON.stringify(event);
+      line.appendChild(msg);
+    } else if (event.type === "connecting") {
+      const msg = document.createElement("span");
+      msg.className = "event-meta";
+      msg.textContent =
+        `Connecting to /review/stream for task=${event.agent}…`;
+      line.appendChild(msg);
+    } else {
+      const txt = document.createElement("span");
+      txt.className = "event-meta";
+      txt.textContent = JSON.stringify(event).slice(0, 200);
+      line.appendChild(txt);
+    }
+
+    logEl.appendChild(line);
+    // Auto-scroll to the bottom.
+    const streamEl = logEl.closest(".stage-event-stream");
+    if (streamEl) streamEl.scrollTop = streamEl.scrollHeight;
+  }
+
+  function formatToolInput(input) {
+    if (typeof input === "string") return input;
+    try {
+      return JSON.stringify(input, null, 0).slice(0, 300);
+    } catch (_e) {
+      return String(input).slice(0, 300);
+    }
+  }
 
   /**
    * Sets up the file input, drag-drop zone, and clear button.
@@ -738,6 +1003,7 @@
   // ---- Init ----
   function init() {
     setupModeToggle();
+    setupStageExpand();
     setupUpload();
     setupTabs();
     setupCopyDownload();

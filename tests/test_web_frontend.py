@@ -122,6 +122,60 @@ def test_styles_css_has_stage_classes():
         assert cls in css, f"missing {cls}"
 
 
+def test_index_html_has_stage_expand_controls():
+    """Each stage row in index.html should have an expand
+    chevron and a hidden event-stream panel — those are
+    wired up by JS to live-stream the per-task SSE events."""
+    web_dir = Path(__file__).parent.parent / "dpo_agent" / "web"
+    html = (web_dir / "index.html").read_text()
+    # 5 stage rows × 1 expand chevron each = 5 buttons.
+    assert html.count('class="stage-expand"') == 5
+    # 5 hidden event-stream panels.
+    assert html.count('class="stage-event-stream"') == 5
+    # 5 log containers.
+    assert html.count('class="stage-event-log"') == 5
+    # Each stage's data-task is set so JS can route to the
+    # correct /review/stream call.
+    for task in ("summarize", "clause_classification", "obligations",
+                  "risk_score", "dpo"):
+        assert f'data-task="{task}"' in html, f"missing data-task={task}"
+
+
+def test_styles_css_has_expand_panel_rules():
+    """The expand panel needs CSS rules for the chevron, the
+    panel itself, and the per-event-type badges."""
+    web_dir = Path(__file__).parent.parent / "dpo_agent" / "web"
+    css = (web_dir / "styles.css").read_text()
+    for cls in (".stage-expand", ".stage-expanded",
+                ".stage-event-stream", ".event-line",
+                ".event-line .event-type",
+                ".event-line .event-tool-name",
+                ".event-line .event-tool-input"):
+        assert cls in css, f"missing {cls}"
+
+
+def test_app_js_handles_per_stage_streaming():
+    """The app.js must wire up the expand chevrons, open
+    /review/stream SSE connections, and render events."""
+    web_dir = Path(__file__).parent.parent / "dpo_agent" / "web"
+    js = (web_dir / "app.js").read_text()
+    # setupStageExpand is called from init().
+    assert "setupStageExpand" in js
+    # Click handler on the expand button.
+    assert 'class="stage-expand"' not in js  # double-check the css-class isn't hardcoded
+    assert "stage-expand" in js  # the JS uses .stage-expand selector
+    # The /review/stream endpoint is called.
+    assert "/review/stream" in js
+    # All 7 streaming event types are rendered.
+    for evt in ("agent_start", "tool_call_start", "tool_call_complete",
+                "text_chunk", "section_complete", "agent_complete",
+                "agent_error"):
+        assert evt in js, f"missing renderer for {evt}"
+    # AbortController is used to cleanly close the SSE on
+    # collapse (otherwise the connection leaks).
+    assert "AbortController" in js
+
+
 # ---- Static file serving (via the FastAPI app) ----
 
 def test_serves_index_at_root(client):
