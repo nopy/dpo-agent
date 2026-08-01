@@ -94,7 +94,12 @@ services:
     networks:
       - dpo-net
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/healthz"]
+      # Use 127.0.0.1 (IPv4 loopback) explicitly. nginx in the
+      # alpine container listens on 0.0.0.0 (IPv4 only), but
+      # `localhost` resolves to ::1 first, which yields
+      # "Connection refused" from wget. The healthcheck
+      # would mark nginx as "unhealthy" forever.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/healthz"]  
       interval: 30s
       timeout: 5s
       retries: 3
