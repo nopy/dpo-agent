@@ -24,7 +24,7 @@ from typing import Literal
 # The 3 prompt types in every task. Tasks may omit some (the loader
 # will raise if you ask for an omitted one) but the convention is
 # that every task ships all three.
-PromptType = Literal["reviewer", "critique", "navigator"]
+PromptType = Literal["reviewer", "critique", "navigator", "reduce"]
 
 
 def list_tasks() -> list[str]:
@@ -40,7 +40,13 @@ def list_tasks() -> list[str]:
     for entry in tasks_pkg.iterdir():
         if not entry.is_dir():
             continue
-        if (entry / "reviewer.md").is_file():
+        # A task is recognized if it has ANY of the recognized
+        # prompt files. The classic 3-prompt tasks have a
+        # reviewer.md; chunked tasks might only have reduce.md.
+        if any(
+            (entry / f"{pt}.md").is_file()
+            for pt in ("reviewer", "critique", "navigator", "reduce")
+        ):
             names.append(entry.name)
     return sorted(names)
 
@@ -65,7 +71,8 @@ def load_prompt(task: str, prompt_type: PromptType) -> str:
         raise FileNotFoundError(
             f"Task {task!r} not found. Available tasks: {available}. "
             f"To add a new task, create dpo_agent/tasks/{task}/ with "
-            f"reviewer.md, critique.md, and navigator.md files."
+            f"reviewer.md, critique.md, navigator.md, and (optionally) "
+            f"reduce.md files."
         )
 
     prompt_path = resources.files(f"dpo_agent.tasks.{task}").joinpath(

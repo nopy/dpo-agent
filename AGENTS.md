@@ -386,11 +386,75 @@ To add a new model:
   `dpo_agent/token_estimation.py`. Match is case-insensitive
   substring; order matters (most specific first).
 
+### 8b. Chunked map-reduce (`chunked_agent.py`)
+
+For documents larger than the selected model's context
+window, the dpo stage in `TriagePipeline` automatically
+switches to `ChunkedReviewer` (map-reduce over chunks). The
+other stages (`summarize`, `clause_classification`, etc.)
+keep using the regular Agent. They run independently and
+may fail on a too-large doc — `PipelineConfig.skip_on_error`
+(defaults to True when `chunk_large_documents` is enabled)
+so the dpo stage still produces a report.
+
+How it works:
+
+1. **`_needs_chunking(document_id)`** — checks the doc's
+   character count against `PipelineConfig.chunk_chars`
+   (default 60_000). If larger, switch to chunked path.
+2. **`ChunkedReviewer.review(document_id)`** — loads the
+   full text from `tools.retrieve_whole_document_content`,
+   splits at paragraph boundaries into chunks of `chunk_chars`
+   (default 60_000).
+3. **MAP phase** — one `.create()` per chunk. The user
+   message contains `<chunk>...</chunk>` plus the running
+   findings summary (so the model avoids duplicates across
+   chunks). The system prompt is `dpo_chunked/reviewer.md`,
+   which teaches the model to emit a structured JSON
+   findings object.
+4. **REDUCE phase** — one final `.create()` with all
+   per-chunk findings as a markdown table, asking the
+   model (via `dpo_chunked/reduce.md`) to synthesize a
+   single consolidated markdown review.
+
+Per-chunk preflight still runs (in `_process_chunk`). If a
+specific chunk is too large for the model, the preflight
+raises `ContextWindowError` — the user just reduces
+`chunk_chars` and retries.
+
+The `dpo_chunked` task directory has 4 prompts:
+- `reviewer.md` — per-chunk JSON findings schema
+- `reduce.md` — final consolidation prompt
+- `critique.md` — for `AgentTwoPass` self-refine (not used
+  in the chunked pipeline; here for API compatibility)
+- `navigator.md` — placeholder (the chunked path doesn't
+  need a navigator)
+
+The `PromptType` literal in `dpo_agent.tasks.loader` now
+includes `reduce` so `load_prompt(task, "reduce")` works.
+The `list_tasks()` discovery also recognizes tasks with
+only `reduce.md` (not just the canonical 3-prompt tasks).
+
+To use ChunkedReviewer directly (not via pipeline):
+
+    from dpo_agent import ChunkedReviewer
+    reviewer = ChunkedReviewer(
+        client=llm_client,
+        task="dpo_chunked",
+        chunk_chars=60_000,
+    )
+    result = reviewer.review_inline(
+        text="<the entire contract>",
+        document_id="contract-001",
+    )
+    print(result.consolidated_review)
+
 ## 9. Where to look when adding a feature
 
 | Task | Files to touch |
 |---|---|
 | Add a new task (e.g. "redact") | `dpo_agent/tasks/redact/{reviewer,critique,navigator}.md` — that's it. Auto-discovered. |
+| Add a new chunked task (e.g. "dpo_chunked") | `dpo_agent/tasks/<name>/{reviewer,reduce,critique,navigator}.md` — `reviewer.md` teaches per-chunk JSON; `reduce.md` synthesizes the final review. Used by `ChunkedReviewer`. |
 | Add a new prompt field to AgentConfig | `dpo_agent/agent.py::AgentConfig` + JSON resolution in `dpo_agent.cli` (if CLI) |
 | Add a new env var | `dpo_agent/models.py` for kinds, `.env.example`, `docker-compose.yml` if it's a deploy-time var |
 | Add a new LLM backend (e.g. Together) | `dpo_agent/llm_client.py` — subclass `LLMClient`, implement `create` and `stream`, register name in `create_client` factory |

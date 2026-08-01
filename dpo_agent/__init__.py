@@ -52,6 +52,11 @@ Example (metadata):
 """
 
 from .agent import Agent, AgentConfig, ReviewResult
+from .chunked_agent import (
+    ChunkedReviewer,
+    ChunkedReviewResult,
+    ChunkFinding,
+)
 from .llm_client import (
     AnthropicClient,
     LLMClient,
@@ -150,6 +155,11 @@ __all__ = [
     "PreflightResult",
     "MODEL_CONTEXT_WINDOWS",
     "ContextWindowError",
+    # Chunked map-reduce review (for contracts larger than the
+    # model's context window)
+    "ChunkedReviewer",
+    "ChunkedReviewResult",
+    "ChunkFinding",
     # LLMClient abstraction (Path D — Anthropic / OpenAI-compat / Mock)
     "LLMClient",
     "LLMResponse",

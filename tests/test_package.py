@@ -43,7 +43,7 @@ def test_package_metadata():
     # PipelineConfig, PipelineStage, DEFAULT_TRIAGE_PLAN, triage)
     # + 5 model resolution (resolve_model, resolve_optional_model,
     # all_resolved_models, DEFAULT_MODELS, ALL_KINDS).
-    assert len(dpo_agent.__all__) == 53  # 47 + 6 token-estimation names
+    assert len(dpo_agent.__all__) == 56  # 53 + 3 chunked-agent names
 
 
 def test_all_public_api_importable():

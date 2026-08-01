@@ -241,6 +241,16 @@ class PipelineRequest(BaseModel):
         default=None,
         description="Optional inline contract text",
     )
+    # When True (default), the dpo stage automatically switches
+    # to ChunkedReviewer (map-reduce) for documents that would
+    # exceed the selected model's context window. When False,
+    # the regular Agent runs even on large docs — which will
+    # fail if the doc is too large.
+    chunk_large_documents: bool = True
+    # Per-chunk character cap when chunk_large_documents=True.
+    # Smaller than the model's context window so system + tools
+    # + output all fit in each chunk's API call.
+    chunk_chars: int = 60_000
 
 
 @app.post("/pipeline/stream")
@@ -299,11 +309,29 @@ async def pipeline_stream(req: PipelineRequest) -> StreamingResponse:
 
     def run_pipeline() -> None:
         try:
+            # When chunking is enabled, individual stages that
+            # hit the context-window preflight on a large doc are
+            # tolerated — the dpo stage (which IS chunked) will
+            # still produce a useful report. Stages 1-4 may still
+            # error on very large docs, but those errors become
+            # stage.error strings rather than a hard pipeline
+            # failure.
+            #
+            # Note: `skip_on_error` here just enables
+            # PipelineConfig.skip_on_error for this run; we
+            # inherit the default (False) plus OR with the
+            # chunking toggle. The pipeline treats per-stage
+            # errors as recoverable when chunking is on, so the
+            # dpo stage still runs even if stages 1-4 failed.
+            skip_on_error = req.chunk_large_documents
             pipeline = TriagePipeline(
                 tools=tools,
                 config=PipelineConfig(
                     auto_confirm=True,
                     on_stage_complete=on_stage,
+                    chunk_large_documents=req.chunk_large_documents,
+                    chunk_chars=req.chunk_chars,
+                    skip_on_error=skip_on_error,
                 ),
             )
             report = pipeline.run(
@@ -367,7 +395,12 @@ async def pipeline_blocking(req: PipelineRequest) -> dict:
         tools = get_tools()
     pipeline = TriagePipeline(
         tools=tools,
-        config=PipelineConfig(auto_confirm=True),
+        config=PipelineConfig(
+            auto_confirm=True,
+            chunk_large_documents=req.chunk_large_documents,
+            chunk_chars=req.chunk_chars,
+            skip_on_error=req.chunk_large_documents,
+        ),
     )
     report = pipeline.run(
         document_id=req.document_id,

@@ -37,10 +37,29 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
-from .agent import Agent, AgentConfig
+from .agent import Agent, AgentConfig, ReviewResult
 from .exceptions import DPOError
 from .tasks.loader import list_tasks
 from .tools import DocumentTools
+
+
+def _chunked_to_review_result(
+    chunked: "ChunkedReviewResult",
+) -> ReviewResult:
+    """Adapt a ChunkedReviewResult to the Agent's ReviewResult.
+
+    The downstream pipeline stages use ReviewResult fields
+    (review, tool_calls, chunks_read, elapsed_seconds). The
+    chunked variant has the same semantics — `consolidated_review`
+    is the final markdown, `tool_calls` includes map + reduce,
+    `chunks_read` is the chunk indexes processed.
+    """
+    return ReviewResult(
+        review=chunked.consolidated_review,
+        tool_calls=chunked.tool_calls,
+        chunks_read=list(range(chunked.chunk_count)),
+        elapsed_seconds=chunked.elapsed_seconds,
+    )
 
 
 # The default triage plan. The wrapper accepts a custom plan
@@ -127,6 +146,16 @@ class PipelineConfig:
     auto_confirm: bool = False
     on_stage_complete: Any = None  # callable
     skip_on_error: bool = False
+    # When True, the `dpo` stage automatically switches to
+    # ChunkedReviewer (map-reduce over chunks) when the document
+    # exceeds the model's context window. This lets the same
+    # pipeline plan handle contracts of any size — small docs
+    # use the regular Agent (faster, one call), large docs use
+    # ChunkedReviewer (N+1 calls but bounded context).
+    chunk_large_documents: bool = True
+    # Per-chunk character cap for the chunked map phase. Smaller
+    # than the model's window so system + tools + output all fit.
+    chunk_chars: int = 60_000
 
 
 class TriagePipeline:
@@ -225,26 +254,50 @@ class TriagePipeline:
                 # For programmatic use, the caller sets auto_confirm.
                 pass
 
-            # Run the task.
+            # Run the task. The `dpo` stage is special: if
+            # `chunk_large_documents` is enabled and the document
+            # has more characters than the model's context window
+            # can fit in one call, we use ChunkedReviewer
+            # (map-reduce) instead of Agent (single-pass tool-use
+            # loop). The other stages still use Agent — they tend
+            # to produce small structured outputs and don't need
+            # map-reduce.
             stage = PipelineStage(task=task)
             try:
-                agent = Agent(
-                    tools=self.tools_impl,
-                    task=task,
-                    client=client,
-                )
-                result = agent.run(document_id=document_id, **kwargs)
-                stage.result = result
-                stage.tool_calls = result.tool_calls
-                stage.chunks_read = result.chunks_read
-                stage.elapsed_seconds = result.elapsed_seconds
+                if (
+                    task == "dpo"
+                    and self.config.chunk_large_documents
+                    and self._needs_chunking(document_id)
+                ):
+                    chunked_result = self._run_dpo_chunked(
+                        document_id=document_id,
+                        client=client,
+                        chunk_chars=self.config.chunk_chars,
+                    )
+                    stage.result = _chunked_to_review_result(chunked_result)
+                    stage.tool_calls = chunked_result.tool_calls
+                    stage.chunks_read = list(
+                        range(chunked_result.chunk_count)
+                    )
+                    stage.elapsed_seconds = chunked_result.elapsed_seconds
+                else:
+                    agent = Agent(
+                        tools=self.tools_impl,
+                        task=task,
+                        client=client,
+                    )
+                    result = agent.run(document_id=document_id, **kwargs)
+                    stage.result = result
+                    stage.tool_calls = result.tool_calls
+                    stage.chunks_read = result.chunks_read
+                    stage.elapsed_seconds = result.elapsed_seconds
                 # Rough cost estimate: 1M tokens ~ $3 for Sonnet 5.
                 # We don't have a precise token count, so this
                 # is a heuristic. Real callers should plug in
                 # their model API's usage callback.
                 stage.cost_estimate = self._estimate_cost(
-                    chunks_read=result.chunks_read,
-                    elapsed_seconds=result.elapsed_seconds,
+                    chunks_read=stage.chunks_read,
+                    elapsed_seconds=stage.elapsed_seconds,
                 )
             except DPOError as e:
                 stage.error = str(e)
@@ -330,6 +383,51 @@ class TriagePipeline:
         input_tokens = len(chunks_read) * 4000
         output_tokens = 0  # not tracked here
         return (input_tokens * 3.0 / 1_000_000) + (output_tokens * 15.0 / 1_000_000)
+
+    # ── Chunked-review (map-reduce) helpers ─────────────────────
+
+    def _needs_chunking(self, document_id: str) -> bool:
+        """Return True if the document's character count exceeds
+        the user-configured `chunk_chars` threshold.
+
+        If the document can't be read (e.g. not in the store),
+        default to False — we let the regular Agent try; it'll
+        surface its own error if it fails.
+        """
+        try:
+            total_chars = self.tools_impl.get_document_size(document_id)
+        except Exception:
+            return False
+        return total_chars > self.config.chunk_chars
+
+    def _run_dpo_chunked(
+        self,
+        *,
+        document_id: str,
+        client: Any,
+        chunk_chars: int,
+    ) -> "ChunkedReviewResult":
+        """Run the dpo_chunked task via the chunked map-reduce
+        path. Returns a ChunkedReviewResult; the caller
+        adapts it to a ReviewResult for the pipeline.
+
+        If `client` is None, falls back to the LLMClient
+        factory (which auto-detects from env vars). This
+        matches Agent's behavior — callers can pass a client
+        for testing, or let it auto-resolve from
+        ANTHROPIC_API_KEY / OPENROUTER_API_KEY.
+        """
+        from .chunked_agent import ChunkedReviewer
+        if client is None:
+            from .llm_client import create_client
+            client = create_client()
+        reviewer = ChunkedReviewer(
+            tools=self.tools_impl,
+            task="dpo_chunked",
+            client=client,
+            chunk_chars=chunk_chars,
+        )
+        return reviewer.review(document_id=document_id)
 
     def _build_json_report(
         self,

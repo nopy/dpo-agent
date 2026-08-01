@@ -797,6 +797,56 @@ model table is wrong about a specific deployment, the
 LLMClient catches `prompt is too long`-class errors from
 the provider and re-raises them as `ContextWindowError`.
 
+### Chunked map-reduce (processing documents larger than the context window)
+
+For contracts larger than the model's context window, the
+`dpo` stage in `TriagePipeline` automatically switches to
+`ChunkedReviewer` (map-reduce over chunks). The other
+stages keep using the regular Agent — they may fail on a
+too-large doc, but `PipelineConfig.skip_on_error` defaults
+to `True` when chunking is enabled, so the pipeline still
+produces a report from the dpo stage alone.
+
+How it works:
+
+1. **Detect** — if `document_id` is larger than
+   `PipelineConfig.chunk_chars` (default 60_000), the
+   `dpo` stage switches to chunked mode.
+2. **MAP** — the contract is split at paragraph
+   boundaries into chunks. Each chunk is sent to the
+   model with the `dpo_chunked/reviewer.md` system
+   prompt, which teaches it to emit structured JSON
+   findings (severity-ordered, with verbatim quotes).
+3. **REDUCE** — once all chunks are processed, the
+   findings are sent to a final synthesis call using
+   `dpo_chunked/reduce.md`, which produces the
+   consolidated markdown review.
+
+Per-chunk preflight still runs — if a single chunk
+exceeds the model's budget, the user just reduces
+`chunk_chars` and retries.
+
+Enable / disable via `PipelineRequest`:
+
+```json
+{
+  "document_id": "...",
+  "chunk_large_documents": true,
+  "chunk_chars": 60000
+}
+```
+
+`chunk_large_documents` defaults to `True`, so the
+chunked path kicks in automatically when needed. Set
+it to `False` to force the regular Agent (useful for
+testing or when you know the contract fits).
+
+The chunked task lives at
+`dpo_agent/tasks/dpo_chunked/{reviewer,reduce,
+critique,navigator}.md`. The `reduce.md` prompt is
+new (added to `PromptType` literal in
+`dpo_agent.tasks.loader`).
+
 ### LLM backends (Anthropic / OpenAI-compat / Mock)
 
 The dpo-agent's tool-use loop is backend-agnostic. The
