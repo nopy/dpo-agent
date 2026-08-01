@@ -1012,6 +1012,33 @@ The frontend is a single HTML file + a CSS file + a JS
 file, with **no build step** and **no framework dependencies**.
 It's small enough to read end-to-end (~700 lines total).
 
+### Modes
+
+The contract input has two modes:
+
+1. **Use bundled example** — runs the triage pipeline against
+   `example-dpa`, a small Data Processing Addendum that's
+   included in the example bundle. No file needed.
+
+2. **Paste contract text** — opens an editor area where the
+   contract can be either pasted into a textarea or **uploaded
+   as a file**.
+
+The upload zone accepts `.md`, `.markdown`, and `.txt` files
+up to 5 MB. Drag-and-drop or click-to-pick both work. When a
+file is selected:
+
+- The file's text is read in the browser (no server round-trip)
+- The Document ID is auto-set from the filename slug
+- A chip appears showing the filename + size, with a × button
+  to clear the upload
+
+Supported file types are the ones that can be processed
+directly as plain text. PDFs and DOCX would require server-side
+parsing (the `dpo_agent/kg/ingest.py` module has parsers for
+those — to enable them, you can extend `setupUpload()` in
+`dpo_agent/web/app.js` to POST the file to a new endpoint).
+
 ### Adding a new task
 
 ```bash

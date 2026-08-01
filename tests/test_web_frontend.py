@@ -65,6 +65,14 @@ def test_index_html_has_required_elements():
     assert "obligations" in html
     assert "risk_score" in html
     assert "dpo" in html
+    # File upload zone (markdown / text contracts)
+    assert 'id="upload-zone"' in html
+    assert 'id="file-input"' in html
+    assert 'accept=".md,.markdown,.txt' in html or (
+        ".md" in html and ".markdown" in html and ".txt" in html
+    )
+    assert 'id="uploaded-file"' in html
+    assert 'id="uploaded-file-clear"' in html
 
 
 def test_app_js_uses_sse_protocol():

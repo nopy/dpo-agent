@@ -50,11 +50,40 @@
 
       <div class="form-section hidden" id="inline-section">
         <label class="form-label" for="inline-text">Contract text</label>
+
+        <!-- File upload zone (drag-drop or click-to-pick).
+             Files are read in the browser and their text
+             contents are placed into #inline-text below. -->
+        <div class="upload-zone" id="upload-zone">
+          <input
+            type="file"
+            id="file-input"
+            accept=".md,.markdown,.txt,text/markdown,text/plain"
+            hidden
+          />
+          <label for="file-input" class="upload-button">
+            <span class="upload-icon">📎</span>
+            <span class="upload-label">Upload contract (.md or .txt)</span>
+          </label>
+          <span class="upload-hint">or drag a file here</span>
+
+          <div class="uploaded-file hidden" id="uploaded-file">
+            <span class="uploaded-file-name" id="uploaded-file-name"></span>
+            <span class="uploaded-file-size" id="uploaded-file-size"></span>
+            <button
+              type="button"
+              class="uploaded-file-clear"
+              id="uploaded-file-clear"
+              title="Remove uploaded file"
+            >×</button>
+          </div>
+        </div>
+
         <textarea
           id="inline-text"
           class="text-area"
           rows="10"
-          placeholder="Paste the contract text here…"
+          placeholder="Or paste the contract text here…"
         ></textarea>
       </div>
 

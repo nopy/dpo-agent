@@ -469,9 +469,163 @@
     URL.revokeObjectURL(url);
   }
 
+  // ---- File upload (markdown / text contracts) ----
+  // Browser-side: read a file and put its contents in the
+  // existing #inline-text textarea. The server already accepts
+  // the contract text via the PipelineRequest.inline_text field,
+  // so the rest of the pipeline path is unchanged.
+  const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;  // 5 MB cap
+  const UPLOAD_ACCEPT_EXTS = new Set([".md", ".markdown", ".txt"]);
+
+  /**
+   * Sets up the file input, drag-drop zone, and clear button.
+   * Called once during init().
+   */
+  function setupUpload() {
+    const fileInput = $("file-input");
+    const uploadZone = $("upload-zone");
+    const uploadedFile = $("uploaded-file");
+    const uploadedFileName = $("uploaded-file-name");
+    const uploadedFileSize = $("uploaded-file-size");
+    const uploadedFileClear = $("uploaded-file-clear");
+    const inlineSection = $("inline-section");
+    const inlineText = $("inline-text");
+
+    /** Show the inline section + drop the text in the textarea. */
+    function applyFileToTextarea(filename, text) {
+      // Make sure the inline section is visible so the user sees
+      // their uploaded text and can edit it.
+      inlineSection.classList.remove("hidden");
+      inlineText.value = text;
+      uploadedFileName.textContent = filename;
+      uploadedFileSize.textContent = formatBytes(new Blob([text]).size);
+      uploadedFile.classList.remove("hidden");
+      // Switch document-id to a slug based on the filename so
+      // the audit log shows something meaningful.
+      const docIdInput = $("document-id");
+      docIdInput.value = filename.replace(/\.[^.]+$/, "").replace(
+        /[^a-zA-Z0-9_-]/g, "-"
+      ).slice(0, 64) || "uploaded-contract";
+      // Reset the file input so picking the same file twice
+      // triggers a new change event.
+      fileInput.value = "";
+    }
+
+    function showUploadError(message) {
+      uploadZone.classList.add("upload-zone-error");
+      const existing = uploadZone.querySelector(".upload-error");
+      if (existing) existing.remove();
+      const err = document.createElement("div");
+      err.className = "upload-error";
+      err.textContent = message;
+      uploadZone.appendChild(err);
+      setTimeout(() => err.remove(), 5000);
+    }
+
+    function clearUpload() {
+      inlineText.value = "";
+      uploadedFile.classList.add("hidden");
+      uploadedFileName.textContent = "";
+      uploadedFileSize.textContent = "";
+      uploadZone.classList.remove("upload-zone-error");
+      uploadZone.querySelectorAll(".upload-error").forEach(
+        n => n.remove()
+      );
+    }
+
+    /**
+     * Validate a File object and read its text. Then route into
+     * the textarea. Errors are surfaced via the upload-zone-error
+     * visual style.
+     */
+    function handleFile(file) {
+      if (!file) return;
+
+      // Validation. Extension + size. We check the extension
+      // rather than just MIME because browsers disagree on
+      // text/markdown vs text/plain for .md.
+      const lowerName = file.name.toLowerCase();
+      const ext = lowerName.match(/\.[^.]+$/);
+      if (!ext || !UPLOAD_ACCEPT_EXTS.has(ext[0])) {
+        showUploadError(
+          `Unsupported file type: ${file.name}. Use .md, .markdown, or .txt.`
+        );
+        return;
+      }
+      if (file.size > UPLOAD_MAX_BYTES) {
+        showUploadError(
+          `File too large: ${formatBytes(file.size)} (limit is ` +
+          `${formatBytes(UPLOAD_MAX_BYTES)}).`
+        );
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const text = String(reader.result || "");
+          if (!text.trim()) {
+            showUploadError(`File is empty.`);
+            return;
+          }
+          applyFileToTextarea(file.name, text);
+          logEvent("upload", `Loaded ${file.name} (${formatBytes(file.size)})`, "info");
+        } catch (e) {
+          showUploadError(`Failed to read file: ${e.message}`);
+        }
+      };
+      reader.onerror = () => {
+        showUploadError(`Failed to read file: ${reader.error || "unknown error"}`);
+      };
+      reader.readAsText(file);
+    }
+
+    // File input change (click-to-pick).
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files && fileInput.files[0]) {
+        handleFile(fileInput.files[0]);
+      }
+    });
+
+    // Drag-and-drop on the entire upload zone.
+    uploadZone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      uploadZone.classList.add("upload-zone-drag-over");
+    });
+    uploadZone.addEventListener("dragleave", (e) => {
+      // Only remove the highlight if we left the zone, not a
+      // child element (dragleave fires for every child too).
+      if (e.target === uploadZone || !uploadZone.contains(e.relatedTarget)) {
+        uploadZone.classList.remove("upload-zone-drag-over");
+      }
+    });
+    uploadZone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      uploadZone.classList.remove("upload-zone-drag-over");
+      const file = e.dataTransfer && e.dataTransfer.files
+        && e.dataTransfer.files[0];
+      if (file) handleFile(file);
+    });
+
+    // Clear button.
+    uploadedFileClear.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clearUpload();
+    });
+
+    /** Human-readable byte / KB / MB. */
+    function formatBytes(n) {
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+    }
+  }
+
   // ---- Init ----
   function init() {
     setupModeToggle();
+    setupUpload();
     setupTabs();
     setupCopyDownload();
     $("run-button").addEventListener("click", runPipeline);

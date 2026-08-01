@@ -251,6 +251,110 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* UPLOAD ZONE — drag-drop or click-to-pick file input. The
+   uploaded text is read by JS and placed in the textarea below. */
+.upload-zone {
+  border: 1.5px dashed var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-elevated);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.upload-zone.upload-zone-drag-over {
+  border-color: var(--accent);
+  background: rgba(56, 139, 253, 0.08);
+}
+
+.upload-zone.upload-zone-error {
+  border-color: var(--error);
+}
+
+.upload-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.upload-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.upload-icon {
+  font-size: 14px;
+}
+
+.upload-label {
+  white-space: nowrap;
+}
+
+.upload-hint {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.uploaded-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--success);
+  border-radius: 4px;
+  font-size: 12px;
+  max-width: 100%;
+}
+
+.uploaded-file-name {
+  color: var(--text);
+  font-weight: 500;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploaded-file-size {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.uploaded-file-clear {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.uploaded-file-clear:hover {
+  color: var(--error);
+}
+
+.upload-error {
+  font-size: 12px;
+  color: var(--error);
+  margin-top: 4px;
+  width: 100%;
+}
+
 /* TABS */
 .tabs {
   display: flex;

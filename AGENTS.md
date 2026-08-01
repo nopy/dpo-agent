@@ -227,7 +227,7 @@ The `docker-compose.yml` runs:
 - **`neo4j`** — Neo4j Community, optional; falls back to SQLite if
   not configured
 
-**Endpoints:**
+- **Endpoints:**
 
 - `POST /review` — single-task DPO review (blocking)
 - `POST /review/stream` — single-task SSE stream
@@ -237,6 +237,28 @@ The `docker-compose.yml` runs:
 SSE events: `stage_start`, `stage_complete`, `pipeline_complete`,
 `error`. The web frontend JS (`dpo_agent/web/app.js`) handles each
 in `handleEvent()`-style dispatch.
+
+### 7a. Web Modes (bundled example vs. uploaded/pasted contract)
+
+The frontend has two modes for contract input:
+
+1. **Bundled example** — uses the `example-dpa` document bundled
+   with the package (a small Data Processing Addendum).
+2. **Paste/upload** — the user can either paste contract text
+   into a textarea **or upload a file** via drag-and-drop or
+   click-to-pick.
+
+The file upload is **client-side** — files are read with
+`FileReader.readAsText()` and the contents go into the same
+textarea. No new server endpoint needed; the existing
+`PipelineRequest.inline_text` field carries the contract
+text. Supported extensions: `.md`, `.markdown`, `.txt`. Max
+5 MB (browser-side validation).
+
+To extend to PDFs/DOCX, add a new endpoint (e.g. `POST
+/contract/upload`) that accepts the file via multipart and
+runs `dpo_agent/kg/ingest.py` parsers server-side. Wire it in
+by extending `setupUpload()` in `dpo_agent/web/app.js`.
 
 ## 8. Common pitfalls
 
