@@ -356,6 +356,36 @@ canonical implementation. The Dockerfile no longer needs to vendor
 `../wiki-contracts`. The `dpo_agent.integrations.kgpipeline` module
 imports from `dpo_agent.kg`, not from the external package.
 
+### 8a. Context-window preflight (token_estimation.py)
+
+Every `Agent._call_model()`, `Navigator._call_model()`,
+and `AgentTwoPass._call_critique()` runs a preflight token
+estimate BEFORE the API call. The preflight:
+
+1. Estimates input tokens from system + messages + tools.
+2. Looks up the model's known context window in
+   `MODEL_CONTEXT_WINDOWS` (substring match).
+3. Returns the smaller of `window - max_output_tokens`
+   and `window * 0.8` as the usable input budget.
+4. Raises `ContextWindowError` if the estimate exceeds
+   the budget.
+
+If the preflight's model table is wrong about a specific
+model, the post-API safety net in `llm_client.py`
+catches context-window errors raised by the provider
+and re-raises them as `ContextWindowError`.
+
+When the user sees "Contract is too large" in the UI, the
+message includes the model, the estimated tokens, and the
+window — so they can immediately switch to a larger-context
+model (`claude-sonnet-4-5`, `gemini-2.5-pro`, etc.) or
+chunk the contract via the navigator.
+
+To add a new model:
+- Append to `MODEL_CONTEXT_WINDOWS` in
+  `dpo_agent/token_estimation.py`. Match is case-insensitive
+  substring; order matters (most specific first).
+
 ## 9. Where to look when adding a feature
 
 | Task | Files to touch |

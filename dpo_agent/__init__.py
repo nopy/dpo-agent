@@ -75,6 +75,7 @@ from .models import (
 from .exceptions import (
     AgentStoppedError,
     ConfigurationError,
+    ContextWindowError,
     DPOError,
     MaxIterationsError,
     ToolError,
@@ -90,6 +91,13 @@ from .pipeline import (
 )
 from .streaming import AgentEvent, StreamingAgent, StreamingConfig
 from .tasks.loader import list_tasks, load_prompt
+from .token_estimation import (
+    MODEL_CONTEXT_WINDOWS,
+    PreflightResult,
+    estimate_tokens,
+    get_context_window,
+    preflight_check,
+)
 from .tools import TOOLS, DocumentTools, dispatch
 from .two_pass import AgentTwoPass, TwoPassConfig, TwoPassResult
 
@@ -135,6 +143,13 @@ __all__ = [
     "all_resolved_models",
     "DEFAULT_MODELS",
     "ALL_KINDS",
+    # Token estimation / context-window preflight
+    "estimate_tokens",
+    "get_context_window",
+    "preflight_check",
+    "PreflightResult",
+    "MODEL_CONTEXT_WINDOWS",
+    "ContextWindowError",
     # LLMClient abstraction (Path D — Anthropic / OpenAI-compat / Mock)
     "LLMClient",
     "LLMResponse",

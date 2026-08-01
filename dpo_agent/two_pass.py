@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .agent import AgentConfig, _content_to_anthropic_dict
+from .agent import AgentConfig, _content_to_anthropic_dict, _run_preflight_or_raise
 from .llm_client import LLMClient, TextBlock, ToolUseBlock, create_client
 
 from .agent import Agent, AgentConfig, ReviewResult
@@ -238,6 +238,21 @@ class AgentTwoPass:
             }]
         else:
             kwargs["system"] = self.critique_prompt
+
+        # Context-window preflight. The critique pass operates
+        # on the full prior review output plus the source
+        # document — easily 2-3x the original agent input
+        # budget. Refusing early saves a 60+ second API call.
+        critique_model = (
+            self.config.critique_model or self.config.reviewer_model
+        )
+        _run_preflight_or_raise(
+            model=critique_model,
+            system=kwargs["system"],
+            messages=messages,
+            tools=kwargs["tools"],
+            max_output_tokens=self.config.max_tokens,
+        )
         return self.client.create(**kwargs)
 
     def _build_critique_instruction(self, prior_review: str) -> str:

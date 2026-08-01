@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .agent import AgentConfig, _content_to_anthropic_dict
+from .agent import AgentConfig, _content_to_anthropic_dict, _run_preflight_or_raise
 from .exceptions import AgentStoppedError, MaxIterationsError, ToolError
 from .llm_client import LLMClient, create_client
 from .tasks.loader import load_prompt
@@ -169,6 +169,19 @@ class Navigator:
             }]
         else:
             kwargs["system"] = self.system_prompt
+
+        # Same context-window preflight as Agent._call_model().
+        # Raises ContextWindowError immediately if the navigator's
+        # prompt + accumulated chunks would exceed the model's
+        # input budget. (The navigator reads chunks — its context
+        # grows monotonically across the loop iterations.)
+        _run_preflight_or_raise(
+            model=self.config.model,
+            system=kwargs["system"],
+            messages=messages,
+            tools=kwargs["tools"],
+            max_output_tokens=self.config.max_tokens,
+        )
         return self.client.create(**kwargs)
 
     def _build_user_message(

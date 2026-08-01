@@ -71,10 +71,88 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
-from .exceptions import DPOError
+from .exceptions import ContextWindowError, DPOError
 
 
 # ─── Request / response dataclasses (the canonical shape) ─────────
+
+# Strings that providers commonly include in their 400-error
+# messages when the request exceeds the model's context window.
+# Each backend parses these out and re-raises as
+# ContextWindowError so the UI gets a structured error instead
+# of a generic API exception.
+CONTEXT_WINDOW_ERROR_PATTERNS = (
+    "prompt is too long",
+    "context length",
+    "context_length",
+    "maximum context length",
+    "input is too long",
+    "request too large",
+    "token limit exceeded",
+    "max_tokens",
+    "too many tokens",
+    "context window",
+)
+
+
+def _is_context_window_error(message: str) -> bool:
+    """Detect provider-side context-window errors.
+
+    Different providers word this differently. We match
+    case-insensitive substrings against a known set rather
+    than a single regex because the messages vary widely
+    ("prompt is too long: 240000 tokens > 200000 maximum"
+    vs "context_length_exceeded" vs "Input tokens exceed
+    the maximum context length").
+
+    Conservative: matches on the more specific phrases
+    only, so we don't accidentally classify a generic 400
+    as a context error.
+    """
+    lower = message.lower()
+    return any(pat in lower for pat in CONTEXT_WINDOW_ERROR_PATTERNS)
+
+
+def _resolve_window_for_error(model: str) -> int:
+    """Resolve the context window for an error message.
+
+    Some provider error bodies include the model's window
+    in the message itself (e.g. "max context length is
+    200000 tokens"). We don't parse the message — too
+    fragile — but we do look up the model in our table for
+    a sensible default. If the model isn't known, returns
+    the conservative DEFAULT_MAX_TOKENS.
+    """
+    # Local import to avoid a circular top-level import.
+    from .token_estimation import get_context_window
+    return get_context_window(model)
+
+
+def _extract_error_message(exc: Exception) -> str:
+    """Extract a useful error message from any of the SDK's
+    exception types.
+
+    The Anthropic SDK exposes 'message' on APIStatusError;
+    OpenAI's BadRequestError has 'message' directly. Some
+    providers wrap errors in HTTPError; some don't. We try
+    a series of accessors so the message we match against
+    _is_context_window_error is the actual user-facing
+    text, not the repr."""
+    for attr in ("message", "body"):
+        try:
+            val = getattr(exc, attr)
+            if isinstance(val, str):
+                return val
+            if isinstance(val, dict):
+                # Anthropic-style: {"error": {"message": "..."}}
+                err = val.get("error", {})
+                if isinstance(err, dict) and "message" in err:
+                    return err["message"]
+                if "message" in val:
+                    return val["message"]
+        except AttributeError:
+            continue
+    return str(exc)
 
 @dataclass
 class TextBlock:
@@ -257,32 +335,6 @@ class AnthropicClient(LLMClient):
             )
         self._client = anthropic.Anthropic(api_key=api_key, **kwargs)
 
-    def create(
-        self,
-        *,
-        model: str,
-        system: str | list[dict[str, Any]] = "",
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        max_tokens: int = 4096,
-        temperature: float | None = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        call_kwargs: dict[str, Any] = {
-            "model": model,
-            "system": system,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            **kwargs,
-        }
-        if tools:
-            call_kwargs["tools"] = tools
-        if temperature is not None:
-            call_kwargs["temperature"] = temperature
-
-        response = self._client.messages.create(**call_kwargs)
-        return _anthropic_to_response(response)
-
     def stream(
         self,
         *,
@@ -309,6 +361,50 @@ class AnthropicClient(LLMClient):
         return _AnthropicStreamContext(
             self._client.messages.stream(**call_kwargs)
         )
+
+    def create(
+        self,
+        *,
+        model: str,
+        system: str | list[dict[str, Any]] = "",
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 4096,
+        temperature: float | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        call_kwargs: dict[str, Any] = {
+            "model": model,
+            "system": system,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            **kwargs,
+        }
+        if tools:
+            call_kwargs["tools"] = tools
+        if temperature is not None:
+            call_kwargs["temperature"] = temperature
+
+        try:
+            response = self._client.messages.create(**call_kwargs)
+        except Exception as exc:
+            # Providers return 400s with a generic status body
+            # for context-length errors. The Anthropic SDK
+            # exposes the body as .body['error']['message'] on
+            # APIStatusError, and as a plain str for other
+            # exception types. We extract defensively.
+            err_msg = _extract_error_message(exc)
+            if _is_context_window_error(err_msg):
+                window = _resolve_window_for_error(model)
+                raise ContextWindowError(
+                    f"Model rejected the request as too long: {err_msg}",
+                    model=model,
+                    estimated_tokens=0,  # unknown — see preflight
+                    context_window=window,
+                    usable_input=window - call_kwargs.get("max_tokens", 4096),
+                ) from exc
+            raise
+        return _anthropic_to_response(response)
 
 
 def _anthropic_to_response(response: Any) -> LLMResponse:
@@ -530,7 +626,20 @@ class OpenAICompatClient(LLMClient):
         if temperature is not None:
             call_kwargs["temperature"] = temperature
 
-        response = self._client.chat.completions.create(**call_kwargs)
+        try:
+            response = self._client.chat.completions.create(**call_kwargs)
+        except Exception as exc:
+            err_msg = _extract_error_message(exc)
+            if _is_context_window_error(err_msg):
+                window = _resolve_window_for_error(model)
+                raise ContextWindowError(
+                    f"Model rejected the request as too long: {err_msg}",
+                    model=model,
+                    estimated_tokens=0,
+                    context_window=window,
+                    usable_input=window - call_kwargs.get("max_tokens", 4096),
+                ) from exc
+            raise
         return _openai_to_response(response)
 
     def stream(

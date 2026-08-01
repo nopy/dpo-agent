@@ -33,6 +33,7 @@ from typing import Any
 from .exceptions import (
     AgentStoppedError,
     ConfigurationError,
+    ContextWindowError,
     MaxIterationsError,
     ToolError,
 )
@@ -46,11 +47,8 @@ from .llm_client import (
 )
 from .tasks.loader import load_prompt
 from .tools import TOOLS, DocumentTools, dispatch
-
-# Model defaults are resolved from env vars (DPO_AGENT_MODEL_LOW /
-# MEDIUM / HIGH, with LLM_MODEL as legacy fallback). See
-# dpo_agent.models for the full resolution logic.
 from .models import resolve_model
+from .token_estimation import preflight_check
 
 
 DEFAULT_REVIEWER_MODEL = "claude-sonnet-5"
@@ -161,6 +159,49 @@ def json_dumps(obj: Any) -> str:
         return json.dumps(obj, indent=2)
     except (TypeError, ValueError):
         return str(obj)
+
+
+def _run_preflight_or_raise(
+    *,
+    model: str,
+    system: str | list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    max_output_tokens: int,
+) -> None:
+    """Run a token-budget preflight check before the API call.
+
+    Called from Agent._call_model(), Navigator._call_model(),
+    StreamingAgent's run, and AgentTwoPass. If the
+    estimated input tokens would exceed the model's input
+    budget (window minus max_output_tokens, capped to 80% of
+    the window), raises ContextWindowError with enough
+    metadata for the UI to render a helpful message.
+
+    The check is intentionally conservative — over-estimating
+    is fine (the user gets a clear "use a bigger model" hint);
+    under-estimating lets the call through and hits the API's
+    400 a minute later, wasting time and money.
+    """
+    result = preflight_check(
+        model=model,
+        system=system,
+        messages=messages,
+        tools=tools,
+        max_output_tokens=max_output_tokens,
+    )
+    if not result.fits:
+        # preflight_check sets result.message to a non-None string
+        # in every "fits=False" path. The assertion is just to
+        # keep type-checkers honest without runtime overhead.
+        assert result.message is not None
+        raise ContextWindowError(
+            result.message,
+            model=model,
+            estimated_tokens=result.estimated_tokens,
+            context_window=result.window,
+            usable_input=result.usable_input,
+        )
 
 
 def _content_to_anthropic_dict(blocks: list[Any]) -> list[dict[str, Any] | str]:
@@ -352,7 +393,21 @@ class Agent:
         )
 
     def _call_model(self, messages: list[dict[str, Any]]) -> LLMResponse:
-        """Call the LLMClient with the prepared messages."""
+        """Call the LLMClient with the prepared messages.
+
+        Runs a preflight token-budget check before each call.
+        If the request would exceed the model's known context
+        window (with 20% reserved for output + safety margin),
+        raises ContextWindowError BEFORE the API call — saving
+        the user from a 60-second wait and a generic API error.
+
+        The check uses character-based estimation (~3 chars per
+        token by default, ~2 for structured / JSON content).
+        It's deliberately conservative — we'd rather refuse a
+        borderline request than let it through and have the
+        API return a 400. The estimate is module-level
+        (`dpo_agent.token_estimation`) and easy to extend.
+        """
         kwargs: dict[str, Any] = {
             "model": self.config.model,
             "max_tokens": self.config.max_tokens,
@@ -367,6 +422,17 @@ class Agent:
             }]
         else:
             kwargs["system"] = self.system_prompt
+
+        # Preflight — refuse the call if it would exceed the
+        # model's known context window. The Navigator etc.
+        # share this same preflight via a helper.
+        _run_preflight_or_raise(
+            model=self.config.model,
+            system=kwargs["system"],
+            messages=messages,
+            tools=kwargs["tools"],
+            max_output_tokens=self.config.max_tokens,
+        )
         return self.client.create(**kwargs)
 
 

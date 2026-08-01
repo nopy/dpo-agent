@@ -757,6 +757,46 @@ reduces self-evaluation bias). This is the standard
 "weak-strong" pattern from the GraphRAG + self-refine
 literature.
 
+### Context-window preflight (avoiding max_tokens errors)
+
+Before each LLM call, the dpo-agent estimates the input
+tokens (system + messages + tools) and rejects requests
+that would exceed the model's known context window.
+This catches "max_tokens"-class errors at the frontend
+in ~10 seconds instead of having the API call fail after
+60+ seconds of waiting.
+
+The check lives in `dpo_agent.token_estimation`. The
+context-window lookup uses substring matching against
+`MODEL_CONTEXT_WINDOWS`, which covers Claude, OpenAI,
+Google, Llama, Mistral, Qwen, and DeepSeek. Unknown
+models fall back to a conservative 8K cap (safety over
+permission).
+
+When the preflight fires, the user sees:
+
+```
+Contract is too large for the selected model
+(qwen/qwen3.7-flash). Estimated 27,169 tokens
+(system: 2,915, messages: 23,435, tools: 819);
+the model has ~25,600 tokens available for input
+(window: 32,000, reserved 4,096 for output). Overage:
+1,569 tokens. Try a model with a larger context window,
+or chunk the contract with the navigator before the
+review pass.
+```
+
+In the UI, the error is surfaced as a structured event
+(with model name, estimated_tokens, context_window)
+rather than a generic API error string. The `error.type`
+in SSE is `"context_window_exceeded"` so the frontend can
+render a dedicated UI affordance.
+
+There's also a post-API safety net: if the preflight's
+model table is wrong about a specific deployment, the
+LLMClient catches `prompt is too long`-class errors from
+the provider and re-raises them as `ContextWindowError`.
+
 ### LLM backends (Anthropic / OpenAI-compat / Mock)
 
 The dpo-agent's tool-use loop is backend-agnostic. The
